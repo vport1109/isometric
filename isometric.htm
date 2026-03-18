@@ -1,137 +1,171 @@
-const canvas = document.getElementById('paintCanvas');
-const ctx = canvas.getContext('2d');
-
-let lines = []; 
-let startX, startY, currentX, currentY;
-let isDrawing = false;
-
-// 6 направлений изометрии + горизонталь
-const isoAngles = [0, 30, 90, 150, 180, -150, -90, -30];
-
-function init() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    render();
-}
-
-function drawGrid() {
-    ctx.strokeStyle = '#e0e0e0';
-    ctx.lineWidth = 1;
-    const spacing = 40; 
-    for (let x = -canvas.width; x < canvas.width * 2; x += spacing) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(x, 0); 
-        ctx.lineTo(x + canvas.height * Math.tan(30 * Math.PI / 180), canvas.height);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(x, 0); 
-        ctx.lineTo(x - canvas.height * Math.tan(30 * Math.PI / 180), canvas.height);
-        ctx.stroke();
-    }
-}
-
-function getSnappedPoint(x1, y1, x2, y2) {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < 10) return {x: x1, y: y1};
-
-    let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
-    const closestAngle = isoAngles.reduce((prev, curr) => {
-        return (Math.abs(curr - angleDeg) < Math.abs(prev - angleDeg) ? curr : prev);
-    });
-
-    const finalRad = closestAngle * Math.PI / 180;
-    return { x: x1 + dist * Math.cos(finalRad), y: y1 + dist * Math.sin(finalRad) };
-}
-
-function render() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    drawGrid();
-    ctx.lineWidth = 3;
-    ctx.lineCap = 'round';
-    
-    lines.forEach(line => {
-        ctx.strokeStyle = '#2c3e50';
-        ctx.beginPath();
-        ctx.moveTo(line.x1, line.y1);
-        ctx.lineTo(line.x2, line.y2);
-        ctx.stroke();
-    });
-
-    if (isDrawing) {
-        const snapped = getSnappedPoint(startX, startY, currentX, currentY);
-        ctx.strokeStyle = '#3498db';
-        ctx.beginPath();
-        ctx.moveTo(startX, startY);
-        ctx.lineTo(snapped.x, snapped.y);
-        ctx.stroke();
-    }
-}
-
-// --- УНИВЕРСАЛЬНЫЕ ОБРАБОТЧИКИ ---
-
-function startDrawing(x, y) {
-    isDrawing = true;
-    startX = x;
-    startY = y;
-    currentX = x;
-    currentY = y;
-}
-
-function moveDrawing(x, y) {
-    if (!isDrawing) return;
-    currentX = x;
-    currentY = y;
-    render();
-}
-
-function stopDrawing() {
-    if (isDrawing) {
-        const snapped = getSnappedPoint(startX, startY, currentX, currentY);
-        if (Math.abs(snapped.x - startX) > 5 || Math.abs(snapped.y - startY) > 5) {
-            lines.push({x1: startX, y1: startY, x2: snapped.x, y2: snapped.y});
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Axonometric Draw Pro</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #fdfdfd; touch-action: none; font-family: sans-serif; }
+        canvas { display: block; }
+        .ui-panel { 
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); 
+            display: flex; flex-direction: column; gap: 10px; align-items: center;
+            background: rgba(255,255,255,0.9); padding: 15px; border-radius: 24px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1); backdrop-filter: blur(10px);
         }
-        isDrawing = false;
+        .colors { display: flex; gap: 10px; margin-bottom: 5px; }
+        .color-btn { width: 35px; height: 35px; border-radius: 50%; border: 2px solid white; cursor: pointer; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+        .color-btn.active { transform: scale(1.2); border-color: #555; }
+        .actions { display: flex; gap: 10px; }
+        button { 
+            padding: 10px 18px; font-size: 14px; border: none; font-weight: bold;
+            background: #f0f0f0; color: #333; border-radius: 12px; cursor: pointer;
+        }
+        button:active { background: #ddd; }
+        .btn-clear { background: #ffebee; color: #d32f2f; }
+    </style>
+</head>
+<body>
+
+<div class="ui-panel">
+    <div class="colors">
+        <div class="color-btn active" style="background: #2c3e50;" onclick="setColor('#2c3e50', this)"></div>
+        <div class="color-btn" style="background: #e74c3c;" onclick="setColor('#e74c3c', this)"></div>
+        <div class="color-btn" style="background: #3498db;" onclick="setColor('#3498db', this)"></div>
+        <div class="color-btn" style="background: #27ae60;" onclick="setColor('#27ae60', this)"></div>
+    </div>
+    <div class="actions">
+        <button onclick="undo()">↩ Назад</button>
+        <button class="btn-clear" onclick="clearCanvas()">Очистить</button>
+    </div>
+</div>
+
+<canvas id="paintCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('paintCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    let lines = []; 
+    let startX, startY, currentX, currentY;
+    let isDrawing = false;
+    let selectedColor = '#2c3e50';
+
+    const isoAngles = [0, 30, 90, 150, 180, -150, -90, -30];
+
+    function init() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
         render();
     }
-}
 
-// Мышь
-canvas.addEventListener('mousedown', e => startDrawing(e.clientX, e.clientY));
-window.addEventListener('mousemove', e => moveDrawing(e.clientX, e.clientY));
-window.addEventListener('mouseup', stopDrawing);
+    function drawGrid() {
+        ctx.strokeStyle = '#f0f0f0';
+        ctx.lineWidth = 1;
+        const spacing = 50; 
+        for (let x = -canvas.width; x < canvas.width * 2; x += spacing) {
+            ctx.beginPath();
+            ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(x, 0); 
+            ctx.lineTo(x + canvas.height * 0.577, canvas.height); // tan(30)
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(x, 0); 
+            ctx.lineTo(x - canvas.height * 0.577, canvas.height);
+            ctx.stroke();
+        }
+    }
 
-// Тач (телефон)
-canvas.addEventListener('touchstart', e => {
-    const t = e.touches[0];
-    startDrawing(t.clientX, t.clientY);
-});
-canvas.addEventListener('touchmove', e => {
-    const t = e.touches[0];
-    moveDrawing(t.clientX, t.clientY);
-});
-canvas.addEventListener('touchend', stopDrawing);
+    function getSnappedPoint(x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 10) return {x: x1, y: y1};
+        let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+        const closestAngle = isoAngles.reduce((prev, curr) => 
+            Math.abs(curr - angleDeg) < Math.abs(prev - angleDeg) ? curr : prev
+        );
+        const finalRad = closestAngle * Math.PI / 180;
+        return { x: x1 + dist * Math.cos(finalRad), y: y1 + dist * Math.sin(finalRad) };
+    }
 
-// Горячие клавиши (Undo на Ctrl+Z)
-window.addEventListener('keydown', e => {
-    if (e.ctrlKey && e.code === 'KeyZ') undo();
-});
+    function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawGrid();
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+        
+        lines.forEach(line => {
+            ctx.strokeStyle = line.color;
+            ctx.beginPath();
+            ctx.moveTo(line.x1, line.y1);
+            ctx.lineTo(line.x2, line.y2);
+            ctx.stroke();
+        });
 
-function undo() {
-    lines.pop();
-    render();
-}
+        if (isDrawing) {
+            const snapped = getSnappedPoint(startX, startY, currentX, currentY);
+            ctx.strokeStyle = selectedColor;
+            ctx.globalAlpha = 0.5;
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(snapped.x, snapped.y);
+            ctx.stroke();
+            ctx.globalAlpha = 1.0;
+        }
+    }
 
-function clearCanvas() {
-    if(confirm("Очистить весь рисунок?")) {
-        lines = [];
+    function startDrawing(x, y) {
+        isDrawing = true;
+        startX = x; startY = y;
+        currentX = x; currentY = y;
+    }
+
+    function moveDrawing(x, y) {
+        if (!isDrawing) return;
+        currentX = x; currentY = y;
         render();
     }
-}
 
-window.addEventListener('resize', init);
-init();
+    function stopDrawing() {
+        if (isDrawing) {
+            const snapped = getSnappedPoint(startX, startY, currentX, currentY);
+            if (Math.sqrt((snapped.x-startX)**2 + (snapped.y-startY)**2) > 5) {
+                lines.push({x1: startX, y1: startY, x2: snapped.x, y2: snapped.y, color: selectedColor});
+            }
+            isDrawing = false;
+            render();
+        }
+    }
+
+    // События
+    canvas.addEventListener('mousedown', e => startDrawing(e.clientX, e.clientY));
+    window.addEventListener('mousemove', e => moveDrawing(e.clientX, e.clientY));
+    window.addEventListener('mouseup', stopDrawing);
+
+    canvas.addEventListener('touchstart', e => {
+        const t = e.touches[0];
+        startDrawing(t.clientX, t.clientY);
+    });
+    canvas.addEventListener('touchmove', e => {
+        const t = e.touches[0];
+        moveDrawing(t.clientX, t.clientY);
+    });
+    canvas.addEventListener('touchend', stopDrawing);
+
+    function setColor(color, el) {
+        selectedColor = color;
+        document.querySelectorAll('.color-btn').forEach(btn => btn.classList.remove('active'));
+        el.classList.add('active');
+    }
+
+    function undo() { lines.pop(); render(); }
+    function clearCanvas() { if(confirm("Очистить?")) { lines = []; render(); } }
+
+    window.addEventListener('resize', init);
+    init();
+</script>
+</body>
+</html>
