@@ -1,68 +1,27 @@
-﻿<!DOCTYPE html>
-<html>
-<head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <style>
-        body { margin: 0; overflow: hidden; background: #f0f0f0; touch-action: none; }
-        canvas { display: block; background: #fff; }
-    </style>
-</head>
-<body>
-<canvas id="paintCanvas"></canvas>
-
-<script>
-    const canvas = document.getElementById('paintCanvas');
-    const ctx = canvas.getContext('2d');
+function getSnappedPoint(x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const dist = Math.sqrt(dx * dx + dy * dy);
     
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+    // Если палец почти не сдвинулся, не рисуем
+    if (dist < 10) return {x: x1, y: y1};
 
-    let startX, startY;
-    let isDrawing = false;
-    const angles = [0, 30, 90, 150, 180, 210, 270, 330]; // Изометрические углы
+    // Получаем угол в радианах и переводим в градусы (от -180 до 180)
+    let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
 
-    canvas.addEventListener('touchstart', e => {
-        isDrawing = true;
-        startX = e.touches[0].clientX;
-        startY = e.touches[0].clientY;
+    // Массив всех направлений (полный круг 360 градусов)
+    // Добавляем 0, 30, 90, 150, 180, -150, -90, -30
+    const isoAngles = [0, 30, 90, 150, 180, -150, -90, -30];
+
+    // Находим ближайший угол из списка
+    const closestAngle = isoAngles.reduce((prev, curr) => {
+        return (Math.abs(curr - angleDeg) < Math.abs(prev - angleDeg) ? curr : prev);
     });
 
-    canvas.addEventListener('touchmove', e => {
-        if (!isDrawing) return;
-        
-        const curX = e.touches[0].clientX;
-        const curY = e.touches[0].clientY;
-        
-        const dx = curX - startX;
-        const dy = curY - startY;
-        
-        // 1. Считаем реальный угол и дистанцию
-        const angle = Math.atan2(dy, dx) * 180 / Math.PI;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        
-        // 2. Находим ближайший изометрический угол
-        const closestAngle = angles.reduce((prev, curr) => {
-            return (Math.abs(curr - angle) < Math.abs(prev - angle) ? curr : prev);
-        });
-
-        // 3. Вычисляем "примагниченную" точку
-        const snappedX = startX + dist * Math.cos(closestAngle * Math.PI / 180);
-        const snappedY = startY + dist * Math.sin(closestAngle * Math.PI / 180);
-
-        // Отрисовка (очищаем и рисуем заново для предпросмотра)
-        draw(snappedX, snappedY);
-    });
-
-    canvas.addEventListener('touchend', () => isDrawing = false);
-
-    function draw(x, y) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        // Тут можно добавить логику сохранения старых линий в массив
-        ctx.beginPath();
-        ctx.moveTo(startX, startY);
-        ctx.lineTo(x, y);
-        ctx.stroke();
-    }
-</script>
-</body>
-</html>
+    // Пересчитываем финальные координаты
+    const finalRad = closestAngle * Math.PI / 180;
+    return {
+        x: x1 + dist * Math.cos(finalRad),
+        y: y1 + dist * Math.sin(finalRad)
+    };
+}
