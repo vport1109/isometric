@@ -1,27 +1,162 @@
-function getSnappedPoint(x1, y1, x2, y2) {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const dist = Math.sqrt(dx * dx + dy * dy);
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Axonometric Pro</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #fdfdfd; touch-action: none; font-family: -apple-system, sans-serif; }
+        canvas { display: block; }
+        .controls { 
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); 
+            display: flex; gap: 10px; background: rgba(0,0,0,0.1); padding: 10px; border-radius: 20px;
+            backdrop-filter: blur(5px);
+        }
+        button { 
+            padding: 12px 20px; font-size: 14px; border: none; font-weight: bold;
+            background: #fff; color: #333; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        button:active { background: #eee; transform: translateY(2px); }
+        .btn-clear { background: #ff5252; color: white; }
+    </style>
+</head>
+<body>
+
+<div class="controls">
+    <button onclick="undo()">↩ Назад</button>
+    <button class="btn-clear" onclick="clearCanvas()">Очистить всё</button>
+</div>
+<canvas id="paintCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('paintCanvas');
+    const ctx = canvas.getContext('2d');
     
-    // Если палец почти не сдвинулся, не рисуем
-    if (dist < 10) return {x: x1, y: y1};
+    let lines = []; 
+    let startX, startY, currentX, currentY;
+    let isDrawing = false;
 
-    // Получаем угол в радианах и переводим в градусы (от -180 до 180)
-    let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
-
-    // Массив всех направлений (полный круг 360 градусов)
-    // Добавляем 0, 30, 90, 150, 180, -150, -90, -30
+    // 6 направлений изометрии
     const isoAngles = [0, 30, 90, 150, 180, -150, -90, -30];
 
-    // Находим ближайший угол из списка
-    const closestAngle = isoAngles.reduce((prev, curr) => {
-        return (Math.abs(curr - angleDeg) < Math.abs(prev - angleDeg) ? curr : prev);
+    function init() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        render();
+    }
+
+    // Рисуем фоновую сетку
+    function drawGrid() {
+        ctx.strokeStyle = '#e0e0e0';
+        ctx.lineWidth = 1;
+        const spacing = 40; // Шаг сетки
+        
+        // Рисуем вертикальные линии и линии под углом 30/-30 градусов
+        for (let x = -canvas.width; x < canvas.width * 2; x += spacing) {
+            // Вертикали (90 градусов)
+            ctx.beginPath();
+            ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height);
+            ctx.stroke();
+
+            // Сетка под углом 30 градусов
+            ctx.beginPath();
+            ctx.moveTo(x, 0); 
+            ctx.lineTo(x + canvas.height * Math.tan(30 * Math.PI / 180), canvas.height);
+            ctx.stroke();
+
+            // Сетка под углом -30 градусов
+            ctx.beginPath();
+            ctx.moveTo(x, 0); 
+            ctx.lineTo(x - canvas.height * Math.tan(30 * Math.PI / 180), canvas.height);
+            ctx.stroke();
+        }
+    }
+
+    function getSnappedPoint(x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 10) return {x: x1, y: y1};
+
+        let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+        const closestAngle = isoAngles.reduce((prev, curr) => {
+            return (Math.abs(curr - angleDeg) < Math.abs(prev - angleDeg) ? curr : prev);
+        });
+
+        const finalRad = closestAngle * Math.PI / 180;
+        return {
+            x: x1 + dist * Math.cos(finalRad),
+            y: y1 + dist * Math.sin(finalRad)
+        };
+    }
+
+    function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawGrid();
+        
+        // Линии
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+        
+        lines.forEach(line => {
+            ctx.strokeStyle = '#2c3e50';
+            ctx.beginPath();
+            ctx.moveTo(line.x1, line.y1);
+            ctx.lineTo(line.x2, line.y2);
+            ctx.stroke();
+        });
+
+        if (isDrawing) {
+            const snapped = getSnappedPoint(startX, startY, currentX, currentY);
+            ctx.strokeStyle = '#3498db';
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(snapped.x, snapped.y);
+            ctx.stroke();
+        }
+    }
+
+    canvas.addEventListener('touchstart', e => {
+        isDrawing = true;
+        const touch = e.touches[0];
+        startX = touch.clientX;
+        startY = touch.clientY;
+        currentX = startX;
+        currentY = startY;
     });
 
-    // Пересчитываем финальные координаты
-    const finalRad = closestAngle * Math.PI / 180;
-    return {
-        x: x1 + dist * Math.cos(finalRad),
-        y: y1 + dist * Math.sin(finalRad)
-    };
-}
+    canvas.addEventListener('touchmove', e => {
+        if (!isDrawing) return;
+        currentX = e.touches[0].clientX;
+        currentY = e.touches[0].clientY;
+        render();
+    });
+
+    canvas.addEventListener('touchend', () => {
+        if (isDrawing) {
+            const snapped = getSnappedPoint(startX, startY, currentX, currentY);
+            if (Math.abs(snapped.x - startX) > 5 || Math.abs(snapped.y - startY) > 5) {
+                lines.push({x1: startX, y1: startY, x2: snapped.x, y2: snapped.y});
+            }
+            isDrawing = false;
+            render();
+        }
+    });
+
+    function undo() {
+        lines.pop();
+        render();
+    }
+
+    function clearCanvas() {
+        if(confirm("Очистить весь рисунок?")) {
+            lines = [];
+            render();
+        }
+    }
+
+    window.addEventListener('resize', init);
+    init();
+</script>
+</body>
+</html>
