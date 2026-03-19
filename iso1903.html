@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Axonometric CAD Pro</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #fdfdfd; touch-action: none; font-family: sans-serif; user-select: none; }
+        canvas { display: block; }
+        .ui-panel { 
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); 
+            display: flex; flex-direction: column; gap: 8px; align-items: center;
+            background: rgba(255,255,255,0.9); padding: 10px; border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1); backdrop-filter: blur(10px); z-index: 10;
+        }
+        .colors, .modes, .actions { display: flex; gap: 6px; }
+        .color-btn { width: 28px; height: 28px; border-radius: 50%; border: 2px solid white; cursor: pointer; }
+        .color-btn.active { transform: scale(1.15); border-color: #555; }
+        button { 
+            padding: 8px 14px; font-size: 12px; border: none; font-weight: bold;
+            background: #f0f0f0; color: #333; border-radius: 8px; cursor: pointer;
+        }
+        button.active { background: #2196F3; color: white; }
+        .btn-clear { background: #ffebee; color: #d32f2f; }
+    </style>
+</head>
+<body>
+
+<div class="ui-panel">
+    <div class="colors">
+        <div class="color-btn active" style="background: #2c3e50;" onclick="setColor('#2c3e50', this)"></div>
+        <div class="color-btn" style="background: #e74c3c;" onclick="setColor('#e74c3c', this)"></div>
+        <div class="color-btn" style="background: #3498db;" onclick="setColor('#3498db', this)"></div>
+    </div>
+    <div class="modes">
+        <button id="drawBtn" class="active" onclick="setMode('draw')">✏️</button>
+        <button id="panBtn" onclick="setMode('pan')">🖐️</button>
+        <button id="zoomWindowBtn" onclick="setMode('zoomWindow')">🔍 Рамка</button>
+    </div>
+    <div class="actions">
+        <button onclick="undo()">↩</button>
+        <button class="btn-clear" onclick="clearCanvas()">🗑️</button>
+    </div>
+</div>
+
+<canvas id="paintCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('paintCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    let lines = []; 
+    let mode = 'draw'; 
+    let selectedColor = '#2c3e50';
+
+    // Трансформации холста
+    let scale = 1.0;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    // Состояния для мыши/тача
+    let isDrawing = false;
+    let startX, startY, currentX, currentY; // Мировые координаты
+    let screenStartX, screenStartY; // Экранные координаты (для Pan и ZoomWindow)
+    
+    // Для Pinch Zoom на телефоне
+    let lastPinchDist = 0;
+
+    const isoAngles = [0, 30, 90, 150, 180, -150, -90, -30];
+
+    function init() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        render();
+    }
+
+    // Перевод экранных координат в мировые (с учетом Pan и Zoom)
+    function screenToWorld(clientX, clientY) {
+        return {
+            x: (clientX - offsetX) / scale,
+            y: (clientY - offsetY) / scale
+        };
+    }
+
+    function drawGrid() {
+        ctx.strokeStyle = '#f0f0f0';
+        ctx.lineWidth = 1 / scale; // Сетка всегда тонкая
+        const spacing = 50;
+        
+        ctx.save();
+        ctx.translate(offsetX, offsetY);
+        ctx.scale(scale, scale);
+        
+        for (let x = -2000; x < 4000; x += spacing) {
+            ctx.beginPath();
+            ctx.moveTo(x, -2000); ctx.lineTo(x, 4000); ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(x, -2000); ctx.lineTo(x + 6000 * 0.577, 4000); ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(x, -2000); ctx.lineTo(x - 6000 * 0.577, 4000); ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    function getSnappedPoint(x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 10) return {x: x1, y: y1};
+        let angleDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+        const closestAngle = isoAngles.reduce((prev, curr) => 
+            Math.abs(curr - angleDeg) < Math.abs(prev - angleDeg) ? curr : prev
+        );
+        const finalRad = closestAngle * Math.PI / 180;
+        return { x: x1 + dist * Math.cos(finalRad), y: y1 + dist * Math.sin(finalRad) };
+    }
+
+    function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawGrid();
+        
+        ctx.save();
+        ctx.translate(offsetX, offsetY);
+        ctx.scale(scale, scale);
+        
+        ctx.lineWidth = 3 / scale; // Линии сохраняют визуальную толщину при зуме
+        ctx.lineCap = 'round';
+        
+        lines.forEach(line => {
+            ctx.strokeStyle = line.color;
+            ctx.beginPath();
+            ctx.moveTo(line.x1, line.y1);
+            ctx.lineTo(line.x2, line.y2);
+            ctx.stroke();
+        });
+
+        if (isDrawing && mode === 'draw') {
+            const snapped = getSnappedPoint(startX, startY, currentX, currentY);
+            ctx.strokeStyle = selectedColor;
+            ctx.globalAlpha = 0.5;
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(snapped.x, snapped.y);
+            ctx.stroke();
+            ctx.globalAlpha = 1.0;
+        }
+        ctx.restore();
+
+        // Отрисовка рамки зума (поверх всего, в экранных координатах)
+        if (isDrawing && mode === 'zoomWindow') {
+            ctx.strokeStyle = '#ff9800';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.strokeRect(screenStartX, screenStartY, currentX - screenStartX, currentY - screenStartY);
+            ctx.setLineDash([]);
+        }
+    }
+
+    // --- УНИВЕРСАЛЬНЫЕ ОБРАБОТЧИКИ (ОДИН ПАЛЕЦ / МЫШЬ) ---
+
+    function handleStart(x, y, isMouse = false) {
+        isDrawing = true;
+        const worldPos = screenToWorld(x, y);
+        
+        screenStartX = x;
+        screenStartY = y;
+
+        if (mode === 'draw') {
+            startX = worldPos.x;
+            startY = worldPos.y;
+            currentX = startX;
+            currentY = startY;
+        } else if (mode === 'pan') {
+            // запоминаем для сдвига
+        } else if (mode === 'zoomWindow') {
+            currentX = x; // используем как временные экранные координаты
+            currentY = y;
+        }
+    }
+
+    function handleMove(x, y) {
+        if (!isDrawing) return;
+
+        const worldPos = screenToWorld(x, y);
+
+        if (mode === 'draw') {
+            currentX = worldPos.x;
+            currentY = worldPos.y;
+        } else if (mode === 'pan') {
+            offsetX += x - screenStartX;
+            offsetY += y - screenStartY;
+            screenStartX = x;
+            screenStartY = y;
+        } else if (mode === 'zoomWindow') {
+            currentX = x;
+            currentY = y;
+        }
+        render();
+    }
+
+    function handleEnd() {
+        if (!isDrawing) return;
+
+        if (mode === 'draw') {
+            const snapped = getSnappedPoint(startX, startY, currentX, currentY);
+            if (Math.sqrt((snapped.x-startX)**2 + (snapped.y-startY)**2) > 5) {
+                lines.push({x1: startX, y1: startY, x2: snapped.x, y2: snapped.y, color: selectedColor});
+            }
+        } else if (mode === 'zoomWindow') {
+            performZoomWindow();
+        }
+        isDrawing = false;
+        render();
+    }
+
+    // Логика Zoom Window
+    function performZoomWindow() {
+        const width = Math.abs(currentX - screenStartX);
+        const height = Math.abs(currentY - screenStartY);
+        if (width < 20 || height < 20) return; // Слишком маленькая рамка
+
+        // Находим мировые координаты углов рамки
+        const worldStart = screenToWorld(Math.min(screenStartX, currentX), Math.min(screenStartY, currentY));
+        const worldEnd = screenToWorld(Math.max(screenStartX, currentX), Math.max(screenStartY, currentY));
+        
+        const worldWidth = worldEnd.x - worldStart.x;
+        const worldHeight = worldEnd.y - worldStart.y;
+
+        // Вычисляем новый масштаб, чтобы рамка вписалась в экран
+        const scaleX = canvas.width / worldWidth;
+        const scaleY = canvas.height / worldHeight;
+        scale = Math.min(scaleX, scaleY) * 0.9; // Немного отступа
+
+        // Центрируем вид на рамке
+        offsetX = -worldStart.x * scale + (canvas.width - worldWidth * scale) / 2;
+        offsetY = -worldStart.y * scale + (canvas.height - worldHeight * scale) / 2;
+        
+        setMode('pan'); // Авто-переключение на панораму после зума
+    }
+
+    // --- ОБРАБОТКА ТАЧ-СОБЫТИЙ (МУЛЬТИТАЧ) ---
+
+    function getDist(t1, t2) {
+        return Math.sqrt((t1.clientX - t2.clientX)**2 + (t1.clientY - t2.clientY)**2);
+    }
+
+    canvas.addEventListener('touchstart', e => {
+        if (e.touches.length === 1) {
+            const t = e.touches[0];
+            handleStart(t.clientX, t.clientY);
+        } else if (e.touches.length === 2) {
+            isDrawing = false; // Отменяем рисование одним пальцем
+            lastPinchDist = getDist(e.touches[0], e.touches[1]);
+        }
+    });
+
+    canvas.addEventListener('touchmove', e => {
+        if (e.touches.length === 1) {
+            const t = e.touches[0];
+            handleMove(t.clientX, t.clientY);
+        } else if (e.touches.length === 2) {
+            // Pinch Zoom
+            const dist = getDist(e.touches[0], e.touches[1]);
+            const zoomFactor = dist / lastPinchDist;
+            lastPinchDist = dist;
+
+            // Центр между пальцами
+            const centerX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+            const centerY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+            applyZoom(zoomFactor, centerX, centerY);
+            render();
+        }
+    });
+
+    canvas.addEventListener('touchend', e => {
+        if (e.touches.length === 0) {
+            handleEnd();
+        } else if (e.touches.length === 1) {
+            // Если один палец оторвали, но второй остался, сбрасываем состояние
+            isDrawing = false; 
+        }
+    });
+
+    // --- ОБРАБОТКА МЫШИ (ОБЫЧНЫЙ ЗУМ КОЛЕСИКОМ) ---
+
+    canvas.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY, true));
+    window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
+    window.addEventListener('mouseup', handleEnd);
+
+    canvas.addEventListener('wheel', e => {
+        e.preventDefault(); // Запрещаем прокрутку страницы
+        const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1; // Зум от себя/к себе
+        applyZoom(zoomFactor, e.clientX, e.clientY);
+        render();
+    }, { passive: false });
+
+    // Универсальная функция зума в точку (x,y)
+    function applyZoom(zoomFactor, x, y) {
+        const worldPos = screenToWorld(x, y);
+        const newScale = Math.max(0.1, Math.min(10, scale * zoomFactor)); // Ограничения масштаба
+        
+        // Магия пересчета оффсета, чтобы точка под курсором осталась на месте
+        offsetX = x - worldPos.x * newScale;
+        offsetY = y - worldPos.y * newScale;
+        scale = newScale;
+    }
+
+    // --- ОСТАЛЬНОЙ UI ---
+
+    function setMode(m) {
+        mode = m;
+        isDrawing = false; // Сбрасываем текущее действие
+        document.querySelectorAll('.modes button').forEach(btn => btn.classList.remove('active'));
+        if (m === 'draw') document.getElementById('drawBtn').classList.add('active');
+        if (m === 'pan') document.getElementById('panBtn').classList.add('active');
+        if (m === 'zoomWindow') document.getElementById('zoomWindowBtn').classList.add('active');
+        render();
+    }
+
+    function setColor(color, el) {
+        selectedColor = color;
+        document.querySelectorAll('.color-btn').forEach(btn => btn.classList.remove('active'));
+        el.classList.add('active');
+        if (mode === 'pan' || mode === 'zoomWindow') setMode('draw');
+    }
+
+    function undo() { lines.pop(); render(); }
+    function clearCanvas() { if(confirm("Очистить?")) { lines = []; scale=1; offsetX=0; offsetY=0; render(); } }
+
+    window.addEventListener('resize', init);
+    init();
+</script>
+</body>
+</html>
