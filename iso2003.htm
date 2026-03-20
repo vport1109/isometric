@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BIM Pipe Pro - Mobile Fix</title>
+    <title>BIM Pipe - Fixed Modes</title>
     <style>
         body { margin: 0; overflow: hidden; background: #f8f9fa; font-family: sans-serif; touch-action: none; }
         canvas { display: block; }
@@ -24,7 +24,7 @@
         #lengthInputContainer input {
             width: 120px; padding: 10px; font-size: 24px; border: 2px solid #ddd; outline: none; border-radius: 8px; margin-bottom: 15px; display: block; margin-left: auto; margin-right: auto;
         }
-        button { padding: 10px; border: none; border-radius: 20px; cursor: pointer; font-weight: bold; background: #eee; font-size: 15px; min-width: 45px; transition: 0.2s; }
+        button { padding: 10px; border: none; border-radius: 20px; cursor: pointer; font-weight: bold; background: #eee; font-size: 15px; min-width: 45px; }
         button.active { background: #2196F3; color: white; }
         .btn-ok { width: 100%; background: #4CAF50; color: white; margin-bottom: 8px; height: 45px; }
         .btn-cancel { width: 100%; background: #f44336; color: white; height: 45px; }
@@ -37,10 +37,10 @@
 </div>
 
 <div id="lengthInputContainer">
-    <label id="distLabel" style="display:block; margin-bottom:10px; font-weight:bold; color:#2196F3">Длина (м):</label>
+    <label style="display:block; margin-bottom:10px; font-weight:bold; color:#2196F3">Длина (м):</label>
     <input type="number" id="lenInput" step="0.1" inputmode="decimal">
     <button class="btn-ok" onclick="confirmLength()">ОК</button>
-    <button class="btn-cancel" onclick="closeInput()">ОТМЕНА (Esc)</button>
+    <button class="btn-cancel" onclick="closeInput()">ОТМЕНА</button>
 </div>
 
 <div class="controls">
@@ -108,11 +108,11 @@
         if (mode === 'node' && injectionStep === 1 && injectPipe) {
             [ {x:injectPipe.x1, y:injectPipe.y1, z:injectPipe.z1}, {x:injectPipe.x2, y:injectPipe.y2, z:injectPipe.z2} ].forEach(pt => {
                 let s = worldToScreen(pt.x, pt.y, pt.z);
-                ctx.strokeStyle = '#9c27b0'; ctx.lineWidth = 3; ctx.strokeRect(s.x - 15, s.y - 15, 30, 30);
+                ctx.strokeStyle = '#9c27b0'; ctx.lineWidth = 3; ctx.strokeRect(s.x-15, s.y-15, 30, 30);
             });
         }
 
-        if (isAction === 'draw') {
+        if (isAction === 'draw' && mode === 'draw') {
             let p1 = worldToScreen(lastPoint.x, lastPoint.y, lastPoint.z), p2 = worldToScreen(currentWorld.x, currentWorld.y, currentWorld.z);
             ctx.strokeStyle = '#2196F3'; ctx.lineWidth = 2.5; ctx.setLineDash([8, 5]);
             ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke(); ctx.setLineDash([]);
@@ -122,7 +122,14 @@
 
     function handleStart(x, y, button = 0) {
         if (lenContainer.style.display === 'block') return;
+        
+        // Панорама средней кнопкой мыши всегда доступна
         if (button === 1) { isAction = 'pan'; lastM = {x, y}; return; }
+
+        if (mode === 'delete') {
+            if (highlightedPipeIdx !== -1) { pipes.splice(highlightedPipeIdx, 1); highlightedPipeIdx = -1; render(); }
+            return; // СТОП! Больше ничего не делаем в режиме удаления
+        }
 
         if (mode === 'node') {
             if (injectionStep === 0 && highlightedPipeIdx !== -1) { 
@@ -137,33 +144,37 @@
             return;
         }
 
-        if (mode === 'delete' && highlightedPipeIdx !== -1) { pipes.splice(highlightedPipeIdx, 1); highlightedPipeIdx = -1; render(); return; }
         if (mode === 'pan') { isAction = 'pan'; lastM = {x, y}; return; }
         
-        isAction = 'draw';
-        lastPoint = currentSnapNode ? {...currentSnapNode} : {...screenToWorld(x,y), z:0};
-        currentWorld = {...lastPoint};
+        // ТОЛЬКО ЕСЛИ РЕЖИМ РИСОВАНИЯ
+        if (mode === 'draw') {
+            isAction = 'draw';
+            lastPoint = currentSnapNode ? {...currentSnapNode} : {...screenToWorld(x,y), z:0};
+            currentWorld = {...lastPoint};
+        }
         render();
     }
 
     function handleMove(x, y) {
         if (isAction === 'pan') { offsetX += x - lastM.x; offsetY += y - lastM.y; lastM = {x, y}; render(); return; }
+        
         highlightedPipeIdx = -1;
         currentSnapNode = null;
 
+        // Поиск объектов под пальцем/курсором
         pipes.forEach(p => {
             [{x:p.x1, y:p.y1, z:p.z1}, {x:p.x2, y:p.y2, z:p.z2}].forEach(n => {
                 let s = worldToScreen(n.x, n.y, n.z);
-                if (Math.hypot(x - s.x, y - s.y) < 30) currentSnapNode = n;
+                if (Math.hypot(x - s.x, y - s.y) < 35) currentSnapNode = n;
             });
         });
 
         pipes.forEach((p, i) => { 
             let s1 = worldToScreen(p.x1, p.y1, p.z1), s2 = worldToScreen(p.x2, p.y2, p.z2);
-            if (distToSeg({x, y}, s1, s2) < 20) highlightedPipeIdx = i; 
+            if (distToSeg({x, y}, s1, s2) < 25) highlightedPipeIdx = i; 
         });
 
-        if (isAction === 'draw') {
+        if (isAction === 'draw' && mode === 'draw') {
             let pS = worldToScreen(lastPoint.x, lastPoint.y, lastPoint.z);
             let dx = (x - pS.x)/scale, dy = (y - pS.y)/scale;
             let ang = (Math.atan2(dy, dx)*180/Math.PI+360)%360;
@@ -179,15 +190,10 @@
     function showInput() { 
         lenContainer.style.display = 'block'; 
         lenInput.value = (injectionStep === 2) ? (injectPipe.len/2).toFixed(2) : "1.0";
-        setTimeout(() => { lenInput.focus(); lenInput.select(); }, 100); 
+        setTimeout(() => { lenInput.focus(); lenInput.select(); }, 150); 
     }
 
-    function closeInput() { 
-        lenContainer.style.display = 'none'; 
-        injectionStep = 0; 
-        isAction = false; 
-        render(); 
-    }
+    function closeInput() { lenContainer.style.display = 'none'; injectionStep = 0; isAction = false; render(); }
 
     function confirmLength() {
         const val = parseFloat(lenInput.value);
@@ -204,17 +210,18 @@
             pipes.push({x1:lastPoint.x, y1:lastPoint.y, z1:lastPoint.z, x2:p2.x, y2:p2.y, z2:p2.z, len:val});
             lastPoint = p2;
         }
-        lenContainer.style.display = 'none'; injectionStep = 0; render();
+        closeInput();
     }
 
+    // Слушатели событий
     canvas.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY, e.button));
     window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
-    window.addEventListener('mouseup', () => { if (isAction === 'draw') showInput(); isAction = false; render(); });
+    window.addEventListener('mouseup', () => { if (isAction === 'draw' && mode === 'draw') showInput(); isAction = false; render(); });
 
     canvas.addEventListener('touchstart', e => {
         const t = e.touches[0];
         if (e.touches.length === 2) { initialDist = Math.hypot(e.touches[0].pageX-e.touches[1].pageX, e.touches[0].pageY-e.touches[1].pageY); }
-        else { handleStart(t.clientX, t.clientY, 0); }
+        else { handleMove(t.clientX, t.clientY); handleStart(t.clientX, t.clientY, 0); }
         e.preventDefault();
     }, {passive:false});
 
@@ -231,10 +238,9 @@
         e.preventDefault();
     }, {passive:false});
 
-    canvas.addEventListener('touchend', () => { 
+    canvas.addEventListener('touchend', (e) => { 
         if (isAction === 'draw' && mode === 'draw') showInput(); 
-        isAction = false; 
-        render(); 
+        isAction = false; render(); 
     });
 
     canvas.addEventListener('wheel', e => { 
@@ -245,7 +251,11 @@
         render(); 
     }, {passive:false});
 
-    function setMode(m) { mode = m; injectionStep = 0; injectPipe = null; document.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.id === m+'Btn')); render(); }
+    function setMode(m) { 
+        mode = m; injectionStep = 0; injectPipe = null; isAction = false;
+        document.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.id === m+'Btn')); 
+        render(); 
+    }
     function undo() { pipes.pop(); render(); }
     function clearAll() { if(confirm("Очистить?")) { pipes=[]; render(); } }
     function updateStats() { let l = pipes.reduce((s, p) => s + p.len, 0); document.getElementById('pipeStats').innerText = `Метраж: ${l.toFixed(2)} м`; }
