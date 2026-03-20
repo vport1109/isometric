@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BIM Pipe - Node Squares Fixed</title>
+    <title>BIM Pipe Pro - Mobile Fix</title>
     <style>
         body { margin: 0; overflow: hidden; background: #f8f9fa; font-family: sans-serif; touch-action: none; }
         canvas { display: block; }
@@ -22,11 +22,12 @@
             display: none; z-index: 200; border: 3px solid #2196F3; text-align: center;
         }
         #lengthInputContainer input {
-            width: 120px; padding: 10px; font-size: 24px; border: 2px solid #ddd; outline: none; border-radius: 8px; margin-bottom: 10px;
+            width: 120px; padding: 10px; font-size: 24px; border: 2px solid #ddd; outline: none; border-radius: 8px; margin-bottom: 15px; display: block; margin-left: auto; margin-right: auto;
         }
-        button { padding: 10px; border: none; border-radius: 20px; cursor: pointer; font-weight: bold; background: #eee; font-size: 15px; min-width: 45px; }
+        button { padding: 10px; border: none; border-radius: 20px; cursor: pointer; font-weight: bold; background: #eee; font-size: 15px; min-width: 45px; transition: 0.2s; }
         button.active { background: #2196F3; color: white; }
-        .btn-ok { display: block; width: 100%; background: #4CAF50; color: white; }
+        .btn-ok { width: 100%; background: #4CAF50; color: white; margin-bottom: 8px; height: 45px; }
+        .btn-cancel { width: 100%; background: #f44336; color: white; height: 45px; }
     </style>
 </head>
 <body>
@@ -36,9 +37,10 @@
 </div>
 
 <div id="lengthInputContainer">
-    <label id="distLabel" style="display:block; margin-bottom:8px; font-weight:bold; color:#2196F3">Отступ от точки (м):</label>
+    <label id="distLabel" style="display:block; margin-bottom:10px; font-weight:bold; color:#2196F3">Длина (м):</label>
     <input type="number" id="lenInput" step="0.1" inputmode="decimal">
     <button class="btn-ok" onclick="confirmLength()">ОК</button>
+    <button class="btn-cancel" onclick="closeInput()">ОТМЕНА (Esc)</button>
 </div>
 
 <div class="controls">
@@ -78,25 +80,19 @@
 
     function render() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
-        // Сетка
         ctx.strokeStyle = '#e9ecef'; ctx.lineWidth = 0.5;
         const gs = 100 * scale;
         for(let x = offsetX % gs; x < canvas.width; x += gs) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke(); }
         for(let y = offsetY % gs; y < canvas.height; y += gs) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke(); }
 
         let nodeCounter = new Map();
-
-        // 1. Рисуем трубы
         pipes.forEach((p, i) => {
             let p1 = worldToScreen(p.x1, p.y1, p.z1), p2 = worldToScreen(p.x2, p.y2, p.z2);
             ctx.strokeStyle = (highlightedPipeIdx === i) ? '#f44336' : '#2c3e50';
-            ctx.lineWidth = (highlightedPipeIdx === i) ? 5 * scale : 3 * scale;
-            ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+            ctx.lineWidth = 3 * scale; ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
             [ `${p.x1},${p.y1},${p.z1}`, `${p.x2},${p.y2},${p.z2}` ].forEach(k => nodeCounter.set(k, (nodeCounter.get(k)||0)+1));
         });
 
-        // 2. Рисуем узлы (точки)
         nodeCounter.forEach((count, key) => {
             const [wx, wy, wz] = key.split(',').map(Number);
             const pos = worldToScreen(wx, wy, wz);
@@ -104,30 +100,23 @@
             ctx.beginPath(); ctx.arc(pos.x, pos.y, 4 * scale, 0, Math.PI*2); ctx.fill();
         });
 
-        // 3. ЗЕЛЕНЫЙ КВАДРАТ (Snap) - всегда виден при наведении в режиме Draw
         if (mode === 'draw' && currentSnapNode && !isAction) {
             let sP = worldToScreen(currentSnapNode.x, currentSnapNode.y, currentSnapNode.z);
             ctx.strokeStyle = '#4CAF50'; ctx.lineWidth = 2; ctx.strokeRect(sP.x-12, sP.y-12, 24, 24);
         }
 
-        // 4. ФИОЛЕТОВЫЕ КВАДРАТЫ (Выбор точки отсчета для нового узла)
         if (mode === 'node' && injectionStep === 1 && injectPipe) {
-            [ {x:injectPipe.x1, y:injectPipe.y1, z:injectPipe.z1}, 
-              {x:injectPipe.x2, y:injectPipe.y2, z:injectPipe.z2} ].forEach(pt => {
+            [ {x:injectPipe.x1, y:injectPipe.y1, z:injectPipe.z1}, {x:injectPipe.x2, y:injectPipe.y2, z:injectPipe.z2} ].forEach(pt => {
                 let s = worldToScreen(pt.x, pt.y, pt.z);
-                ctx.strokeStyle = '#9c27b0'; ctx.lineWidth = 3; 
-                ctx.strokeRect(s.x - 15, s.y - 15, 30, 30);
+                ctx.strokeStyle = '#9c27b0'; ctx.lineWidth = 3; ctx.strokeRect(s.x - 15, s.y - 15, 30, 30);
             });
         }
 
-        // 5. ПУНКТИРНАЯ ЛИНИЯ (Z-линия и Preview)
         if (isAction === 'draw') {
-            let p1 = worldToScreen(lastPoint.x, lastPoint.y, lastPoint.z);
-            let p2 = worldToScreen(currentWorld.x, currentWorld.y, currentWorld.z);
+            let p1 = worldToScreen(lastPoint.x, lastPoint.y, lastPoint.z), p2 = worldToScreen(currentWorld.x, currentWorld.y, currentWorld.z);
             ctx.strokeStyle = '#2196F3'; ctx.lineWidth = 2.5; ctx.setLineDash([8, 5]);
             ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke(); ctx.setLineDash([]);
         }
-
         updateStats();
     }
 
@@ -137,23 +126,18 @@
 
         if (mode === 'node') {
             if (injectionStep === 0 && highlightedPipeIdx !== -1) { 
-                injectPipe = pipes[highlightedPipeIdx]; 
-                injectionStep = 1; render(); 
+                injectPipe = pipes[highlightedPipeIdx]; injectionStep = 1; render(); 
             } else if (injectionStep === 1 && injectPipe) {
                 let pts = [{x:injectPipe.x1,y:injectPipe.y1,z:injectPipe.z1},{x:injectPipe.x2,y:injectPipe.y2,z:injectPipe.z2}];
                 pts.forEach((pt, idx) => {
                     let s = worldToScreen(pt.x, pt.y, pt.z);
-                    if (Math.hypot(x-s.x, y-s.y) < 40) { 
-                        injectBasePoint = pt; 
-                        injectTargetPoint = pts[1-idx]; 
-                        injectionStep = 2; showInput(); 
-                    }
+                    if (Math.hypot(x-s.x, y-s.y) < 40) { injectBasePoint = pt; injectTargetPoint = pts[1-idx]; injectionStep = 2; showInput(); }
                 });
             }
             return;
         }
 
-        if (mode === 'delete' && highlightedPipeIdx !== -1) { pipes.splice(highlightedPipeIdx, 1); render(); return; }
+        if (mode === 'delete' && highlightedPipeIdx !== -1) { pipes.splice(highlightedPipeIdx, 1); highlightedPipeIdx = -1; render(); return; }
         if (mode === 'pan') { isAction = 'pan'; lastM = {x, y}; return; }
         
         isAction = 'draw';
@@ -164,11 +148,9 @@
 
     function handleMove(x, y) {
         if (isAction === 'pan') { offsetX += x - lastM.x; offsetY += y - lastM.y; lastM = {x, y}; render(); return; }
-        
         highlightedPipeIdx = -1;
         currentSnapNode = null;
 
-        // Поиск ближайшего узла для Snap (только в режиме рисования)
         pipes.forEach(p => {
             [{x:p.x1, y:p.y1, z:p.z1}, {x:p.x2, y:p.y2, z:p.z2}].forEach(n => {
                 let s = worldToScreen(n.x, n.y, n.z);
@@ -176,7 +158,6 @@
             });
         });
 
-        // Подсветка труб (для удаления или выбора под узел)
         pipes.forEach((p, i) => { 
             let s1 = worldToScreen(p.x1, p.y1, p.z1), s2 = worldToScreen(p.x2, p.y2, p.z2);
             if (distToSeg({x, y}, s1, s2) < 20) highlightedPipeIdx = i; 
@@ -186,11 +167,11 @@
             let pS = worldToScreen(lastPoint.x, lastPoint.y, lastPoint.z);
             let dx = (x - pS.x)/scale, dy = (y - pS.y)/scale;
             let ang = (Math.atan2(dy, dx)*180/Math.PI+360)%360;
-            const ds = [{ang:30,x:1,y:0,z:0,n:"X+"},{ang:150,x:0,y:1,z:0,n:"Y+"},{ang:210,x:-1,y:0,z:0,n:"X-"},{ang:330,x:0,y:-1,z:0,n:"Y-"},{ang:90,x:0,y:0,z:-1,n:"DN"},{ang:270,x:0,y:0,z:1,n:"UP"}];
-            lockedDir = ds.reduce((p, c) => Math.abs(c.ang-ang) < Math.abs(p.ang-ang) ? c : p);
-            
-            if(lockedDir.n.includes("D") || lockedDir.n.includes("U")) currentWorld = {x: lastPoint.x, y: lastPoint.y, z: lastPoint.z - dy};
-            else { let d = Math.hypot(dx,dy); currentWorld = {x:lastPoint.x + lockedDir.x*d*1.15, y:lastPoint.y + lockedDir.y*d*1.15, z:lastPoint.z}; }
+            const ds = [{ang:30,x:1,y:0,z:0},{ang:150,x:0,y:1,z:0},{ang:210,x:-1,y:0,z:0},{ang:330,x:0,y:-1,z:0},{ang:90,x:0,y:0,z:-1,n:"Z"},{ang:270,x:0,y:0,z:1,n:"Z"}];
+            let locked = ds.reduce((p, c) => Math.abs(c.ang-ang) < Math.abs(p.ang-ang) ? c : p);
+            lockedDir = locked;
+            if(locked.n === "Z") currentWorld = {x: lastPoint.x, y: lastPoint.y, z: lastPoint.z - dy};
+            else { let d = Math.hypot(dx,dy); currentWorld = {x:lastPoint.x + locked.x*d*1.15, y:lastPoint.y + locked.y*d*1.15, z:lastPoint.z}; }
         }
         render();
     }
@@ -201,9 +182,16 @@
         setTimeout(() => { lenInput.focus(); lenInput.select(); }, 100); 
     }
 
+    function closeInput() { 
+        lenContainer.style.display = 'none'; 
+        injectionStep = 0; 
+        isAction = false; 
+        render(); 
+    }
+
     function confirmLength() {
         const val = parseFloat(lenInput.value);
-        if (isNaN(val) || val <= 0) { lenContainer.style.display = 'none'; return; }
+        if (isNaN(val) || val <= 0) { closeInput(); return; }
         if (injectionStep === 2) {
             const ratio = val / injectPipe.len;
             const nP = { x: injectBasePoint.x + (injectTargetPoint.x-injectBasePoint.x)*ratio, y: injectBasePoint.y + (injectTargetPoint.y-injectBasePoint.y)*ratio, z: injectBasePoint.z + (injectTargetPoint.z-injectBasePoint.z)*ratio };
@@ -219,7 +207,6 @@
         lenContainer.style.display = 'none'; injectionStep = 0; render();
     }
 
-    // Events
     canvas.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY, e.button));
     window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
     window.addEventListener('mouseup', () => { if (isAction === 'draw') showInput(); isAction = false; render(); });
@@ -244,7 +231,11 @@
         e.preventDefault();
     }, {passive:false});
 
-    canvas.addEventListener('touchend', () => { if (isAction === 'draw') showInput(); isAction = false; render(); });
+    canvas.addEventListener('touchend', () => { 
+        if (isAction === 'draw' && mode === 'draw') showInput(); 
+        isAction = false; 
+        render(); 
+    });
 
     canvas.addEventListener('wheel', e => { 
         e.preventDefault(); 
@@ -254,15 +245,11 @@
         render(); 
     }, {passive:false});
 
-    function setMode(m) { 
-        mode = m; injectionStep = 0; injectPipe = null; highlightedPipeIdx = -1;
-        document.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.id === m+'Btn')); 
-        render(); 
-    }
+    function setMode(m) { mode = m; injectionStep = 0; injectPipe = null; document.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.id === m+'Btn')); render(); }
     function undo() { pipes.pop(); render(); }
     function clearAll() { if(confirm("Очистить?")) { pipes=[]; render(); } }
     function updateStats() { let l = pipes.reduce((s, p) => s + p.len, 0); document.getElementById('pipeStats').innerText = `Метраж: ${l.toFixed(2)} м`; }
-    lenInput.addEventListener('keydown', e => { if (e.key === 'Enter') confirmLength(); });
+    lenInput.addEventListener('keydown', e => { if (e.key === 'Enter') confirmLength(); if (e.key === 'Escape') closeInput(); });
     window.addEventListener('resize', init);
     init();
 </script>
