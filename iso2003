@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BIM Pipe - Z-Preview Fixed</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #f8f9fa; font-family: sans-serif; touch-action: none; }
+        canvas { display: block; }
+        .ui-panel { 
+            position: fixed; top: 15px; left: 15px; background: white; padding: 15px; 
+            border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); z-index: 100;
+        }
+        .stats { margin-top: 10px; font-size: 13px; color: #333; line-height: 1.6; }
+        .controls { 
+            position: fixed; bottom: 25px; left: 50%; transform: translateX(-50%); 
+            display: flex; gap: 8px; background: rgba(255,255,255,0.95); padding: 12px 20px; 
+            border-radius: 50px; box-shadow: 0 8px 30px rgba(0,0,0,0.15); z-index: 100;
+        }
+        #lengthInputContainer {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: white; padding: 15px; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            display: none; z-index: 200; border: 3px solid #2196F3;
+        }
+        #lengthInputContainer input {
+            width: 100px; padding: 8px; font-size: 20px; border: 1px solid #ccc; outline: none; text-align: center; border-radius: 5px;
+        }
+        button { padding: 10px 15px; border: none; border-radius: 25px; cursor: pointer; font-weight: bold; background: #eee; font-size: 13px; }
+        button.active { background: #2196F3; color: white; }
+    </style>
+</head>
+<body>
+
+<div class="ui-panel">
+    <strong>BIM Спецификация:</strong>
+    <div id="pipeStats" class="stats">Метраж: 0.00 м</div>
+</div>
+
+<div id="lengthInputContainer">
+    <label id="dirLabel" style="display:block; margin-bottom:8px; font-weight:bold; color:#2196F3">Длина (м):</label>
+    <input type="number" id="lenInput" step="0.01" value="1.00">
+    <div style="font-size:10px; color:#999; margin-top:5px">Enter — OK, Esc — Отмена</div>
+</div>
+
+<div class="controls">
+    <button id="drawBtn" class="active" onclick="setMode('draw')">✏️ Труба</button>
+    <button id="nodeBtn" onclick="setMode('node')">📍 Узел</button>
+    <button id="deleteBtn" onclick="setMode('delete')">🗑️ Удалить</button>
+    <button id="panBtn" onclick="setMode('pan')">🖐️ Панорама</button>
+    <button onclick="undo()">↩ Отмена</button>
+    <button onclick="clearAll()" style="background:#333; color:white;">🗑️ Сброс</button>
+</div>
+
+<canvas id="pipeCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('pipeCanvas');
+    const ctx = canvas.getContext('2d');
+    const lenInput = document.getElementById('lenInput');
+    const lenContainer = document.getElementById('lengthInputContainer');
+    const dirLabel = document.getElementById('dirLabel');
+    
+    let pipes = []; 
+    let mode = 'draw';
+    let scale = 1.0;
+    let offsetX = window.innerWidth / 2, offsetY = window.innerHeight / 2;
+    
+    let isAction = false; // Может быть false, 'draw', 'pan'
+    let snappedNode = null;
+    let highlightedPipeIdx = -1;
+    let injectionStep = 0; 
+    let injectPipe = null, injectBasePoint = null, injectTargetPoint = null;
+
+    let lastPoint = { x: 0, y: 0, z: 0 }, currentWorld = { x: 0, y: 0, z: 0 }, lockedDir = {x:0, y:0, z:0, name:""};
+
+    const isoX = Math.cos(Math.PI / 6), isoY = Math.sin(Math.PI / 6); 
+
+    function init() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; render(); }
+    
+    function worldToScreen(wx, wy, wz) { 
+        return { 
+            x: ((wx - wy) * isoX) * scale + offsetX, 
+            y: ((wx + wy) * isoY - wz) * scale + offsetY 
+        }; 
+    }
+    
+    function screenToWorld(sx, sy) { return { x: (sx - offsetX) / scale, y: (sy - offsetY) / scale }; }
+
+    function distToSeg(p, v, w) {
+        const l2 = (v.x-w.x)**2 + (v.y-w.y)**2; if (l2 === 0) return Math.hypot(p.x-v.x, p.y-v.y);
+        let t = Math.max(0, Math.min(1, ((p.x-v.x)*(w.x-v.x) + (p.y-v.y)*(w.y-v.y)) / l2));
+        return Math.hypot(p.x-(v.x+t*(w.x-v.x)), p.y-(v.y+t*(w.y-v.y)));
+    }
+
+    function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Сетка
+        ctx.strokeStyle = '#e9ecef'; ctx.lineWidth = 0.5;
+        const gs = 100 * scale;
+        for(let x = offsetX % gs; x < canvas.width; x += gs) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke(); }
+        for(let y = offsetY % gs; y < canvas.height; y += gs) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke(); }
+
+        let nodes = new Map();
+        pipes.forEach((p, i) => {
+            let p1 = worldToScreen(p.x1, p.y1, p.z1), p2 = worldToScreen(p.x2, p.y2, p.z2);
+            ctx.strokeStyle = (highlightedPipeIdx === i) ? '#f44336' : '#2c3e50';
+            ctx.lineWidth = (highlightedPipeIdx === i) ? 5 * scale : 3 * scale;
+            ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+            [ `${p.x1},${p.y1},${p.z1}`, `${p.x2},${p.y2},${p.z2}` ].forEach(k => nodes.set(k, (nodes.get(k)||0)+1));
+        });
+
+        // Визуализация узла
+        if (mode === 'node' && injectionStep === 1 && injectPipe) {
+            [ {x:injectPipe.x1,y:injectPipe.y1,z:injectPipe.z1}, {x:injectPipe.x2,y:injectPipe.y2,z:injectPipe.z2} ].forEach(pt => {
+                let s = worldToScreen(pt.x, pt.y, pt.z);
+                ctx.strokeStyle = '#9c27b0'; ctx.lineWidth = 2; ctx.strokeRect(s.x-10, s.y-10, 20, 20);
+            });
+        }
+
+        nodes.forEach((c, k) => {
+            const [wx, wy, wz] = k.split(',').map(Number); const pos = worldToScreen(wx, wy, wz);
+            ctx.fillStyle = c >= 3 ? '#f44336' : (c === 2 ? '#2196F3' : '#9e9e9e');
+            ctx.beginPath(); ctx.arc(pos.x, pos.y, 4 * scale, 0, Math.PI*2); ctx.fill();
+        });
+
+        // Preview Line (Пунктир)
+        if (isAction === 'draw') {
+            let p1 = worldToScreen(lastPoint.x, lastPoint.y, lastPoint.z);
+            let p2 = worldToScreen(currentWorld.x, currentWorld.y, currentWorld.z);
+            ctx.strokeStyle = '#2196F3'; ctx.lineWidth = 2; ctx.setLineDash([8, 4]);
+            ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke(); 
+            ctx.setLineDash([]);
+        }
+
+        if (mode === 'draw' && snappedNode && !isAction) { 
+            ctx.strokeStyle = '#4CAF50'; ctx.lineWidth = 2;
+            ctx.strokeRect(snappedNode.sX-8, snappedNode.sY-8, 16, 16); 
+        }
+        
+        updateStats(nodes);
+    }
+
+    function handleStart(x, y, btn) {
+        if (lenContainer.style.display === 'block') return;
+
+        if (mode === 'node') {
+            if (injectionStep === 0 && highlightedPipeIdx !== -1) {
+                injectPipe = pipes[highlightedPipeIdx]; injectionStep = 1; render();
+            } else if (injectionStep === 1) {
+                let pts = [ {x:injectPipe.x1,y:injectPipe.y1,z:injectPipe.z1}, {x:injectPipe.x2,y:injectPipe.y2,z:injectPipe.z2} ];
+                pts.forEach((pt, idx) => {
+                    let s = worldToScreen(pt.x, pt.y, pt.z);
+                    if (Math.hypot(x-s.x, y-s.y) < 20) {
+                        injectBasePoint = pt; injectTargetPoint = pts[1-idx]; injectionStep = 2;
+                        dirLabel.innerText = "Расстояние (м):"; lenContainer.style.display = 'block';
+                        lenInput.value = (injectPipe.len / 2).toFixed(2); lenInput.focus(); lenInput.select();
+                    }
+                });
+            }
+            return;
+        }
+
+        if (mode === 'delete' && highlightedPipeIdx !== -1) { pipes.splice(highlightedPipeIdx, 1); highlightedPipeIdx = -1; render(); return; }
+        if (btn === 1 || mode === 'pan') { isAction = 'pan'; this.lastM = { x, y }; return; }
+
+        isAction = 'draw';
+        if (snappedNode) lastPoint = { ...snappedNode };
+        else { const w = screenToWorld(x, y); lastPoint = { x: w.x, y: w.y, z: 0 }; }
+        currentWorld = { ...lastPoint };
+    }
+
+    function handleMove(x, y) {
+        if (isAction === 'pan') { offsetX += x - this.lastM.x; offsetY += y - this.lastM.y; this.lastM = { x, y }; render(); return; }
+
+        highlightedPipeIdx = -1;
+        if (mode === 'delete' || (mode === 'node' && injectionStep === 0)) {
+            pipes.forEach((p, i) => { if (distToSeg({x, y}, worldToScreen(p.x1,p.y1,p.z1), worldToScreen(p.x2,p.y2,p.z2)) < 15) highlightedPipeIdx = i; });
+        }
+
+        snappedNode = null;
+        if (mode === 'draw' && !isAction) {
+            pipes.forEach(p => { [{x:p.x1, y:p.y1, z:p.z1}, {x:p.x2, y:p.y2, z:p.z2}].forEach(n => {
+                let sP = worldToScreen(n.x, n.y, n.z); let d = Math.hypot(x-sP.x, y-sP.y);
+                if (d < 30) snappedNode = {...n, sX: sP.x, sY: sP.y};
+            }); });
+        }
+
+        if (isAction === 'draw') {
+            let pStart = worldToScreen(lastPoint.x, lastPoint.y, lastPoint.z);
+            let dx = (x - pStart.x) / scale, dy = (y - pStart.y) / scale;
+            let angle = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+            const dirs = [
+                { id:'X+', ang: 30, x:1, y:0, z:0, name: "Вправо (X+)" }, { id:'Y+', ang: 150, x:0, y:1, z:0, name: "Влево (Y+)" }, 
+                { id:'X-', ang: 210, x:-1, y:0, z:0, name: "Назад (X-)" }, { id:'Y-', ang: 330, x:0, y:-1, z:0, name: "Вперед (Y-)" },
+                { id:'DN', ang: 90, x:0, y:0, z:-1, name: "ВНИЗ (Z-)" }, { id:'UP', ang: 270, x:0, y:0, z:1, name: "ВВЕРХ (Z+)" }
+            ];
+            lockedDir = dirs.reduce((p, c) => Math.abs(c.ang - angle) < Math.abs(p.ang - angle) ? c : p);
+            
+            if (lockedDir.id === 'DN' || lockedDir.id === 'UP') {
+                currentWorld = { ...lastPoint, x: lastPoint.x, y: lastPoint.y, z: lastPoint.z - dy };
+            } else {
+                let d = Math.sqrt(dx*dx+dy*dy);
+                currentWorld = { x: lastPoint.x + lockedDir.x * d * 1.15, y: lastPoint.y + lockedDir.y * d * 1.15, z: lastPoint.z };
+            }
+        }
+        render();
+    }
+
+    lenInput.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+            const val = parseFloat(lenInput.value);
+            if (mode === 'node') {
+                const distCm = val * 100;
+                if (distCm > 0 && distCm < injectPipe.len * 100) {
+                    const ratio = distCm / (injectPipe.len * 100);
+                    const newPt = {
+                        x: injectBasePoint.x + (injectTargetPoint.x - injectBasePoint.x) * ratio,
+                        y: injectBasePoint.y + (injectTargetPoint.y - injectBasePoint.y) * ratio,
+                        z: injectBasePoint.z + (injectTargetPoint.z - injectBasePoint.z) * ratio
+                    };
+                    pipes = pipes.filter(p => p !== injectPipe);
+                    pipes.push({ x1: injectBasePoint.x, y1: injectBasePoint.y, z1: injectBasePoint.z, x2: newPt.x, y2: newPt.y, z2: newPt.z, len: distCm/100 });
+                    pipes.push({ x1: newPt.x, y1: newPt.y, z1: newPt.z, x2: injectTargetPoint.x, y2: injectTargetPoint.y, z2: injectTargetPoint.z, len: injectPipe.len - distCm/100 });
+                    setMode('draw'); lastPoint = { ...newPt };
+                }
+                lenContainer.style.display = 'none'; injectionStep = 0; render();
+            } else if (mode === 'draw' || isAction === 'draw') {
+                const L = val * 100;
+                let p2 = { x: lastPoint.x + (lockedDir.x * L), y: lastPoint.y + (lockedDir.y * L), z: lastPoint.z + (lockedDir.z * L) };
+                pipes.push({ x1: lastPoint.x, y1: lastPoint.y, z1: lastPoint.z, x2: p2.x, y2: p2.y, z2: p2.z, len: L/100 });
+                lastPoint = { ...p2 }; lenContainer.style.display = 'none'; render();
+            }
+        }
+        if (e.key === 'Escape') { lenContainer.style.display = 'none'; injectionStep = 0; render(); }
+    };
+
+    function setMode(m) { 
+        mode = m; injectionStep = 0; highlightedPipeIdx = -1;
+        document.querySelectorAll('.controls button').forEach(b => b.classList.toggle('active', b.id === m+'Btn'));
+        render(); 
+    }
+
+    function undo() { pipes.pop(); render(); }
+    function clearAll() { if(confirm("Сбросить проект?")) { pipes=[]; render(); } }
+    
+    function updateStats(nodes) {
+        let l = pipes.reduce((s, p) => s + p.len, 0), e = 0, t = 0;
+        nodes.forEach(c => { if(c===2) e++; if(c>=3) t++; });
+        document.getElementById('pipeStats').innerHTML = `Метраж: <b>${l.toFixed(2)} м</b><br>Углы: <b>${e}</b>, Тройники: <b>${t}</b>`;
+    }
+
+    canvas.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY, e.button));
+    window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
+    window.addEventListener('mouseup', () => { 
+        if(isAction==='draw'){ 
+            lenContainer.style.display='block'; 
+            dirLabel.innerText="Направление: "+lockedDir.name; 
+            lenInput.focus(); lenInput.select(); 
+        } 
+        isAction=false; render(); 
+    });
+    
+    canvas.addEventListener('wheel', e => { 
+        e.preventDefault(); 
+        const wp = screenToWorld(e.clientX, e.clientY); 
+        scale *= (e.deltaY > 0 ? 0.9 : 1.1); 
+        offsetX = e.clientX - wp.x * scale; offsetY = e.clientY - wp.y * scale; 
+        render(); 
+    }, {passive:false});
+    
+    window.addEventListener('resize', init);
+    init();
+</script>
+</body>
+</html>
