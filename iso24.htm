@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BIM Pipe - Fittings Logic</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #f8f9fa; font-family: sans-serif; touch-action: none; }
+        canvas { display: block; }
+        .ui-panel { 
+            position: fixed; top: 10px; left: 10px; background: white; padding: 12px; 
+            border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); z-index: 100; font-size: 13px;
+            max-height: 80vh; overflow-y: auto;
+        }
+        .dn-panel {
+            position: fixed; bottom: 85px; left: 50%; transform: translateX(-50%);
+            display: none; gap: 5px; background: rgba(255,255,255,0.95); padding: 8px;
+            border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.15); z-index: 90;
+        }
+        .controls { 
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); 
+            display: flex; gap: 8px; background: rgba(255,255,255,0.98); padding: 10px; 
+            border-radius: 50px; box-shadow: 0 5px 25px rgba(0,0,0,0.2); z-index: 100;
+        }
+        #lengthInputContainer {
+            position: fixed; top: 30%; left: 50%; transform: translate(-50%, -50%);
+            background: white; padding: 20px; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+            display: none; z-index: 200; border: 3px solid #2196F3; text-align: center;
+        }
+        #lengthInputContainer input { 
+            width: 140px; padding: 10px; font-size: 24px; border: 2px solid #ddd; 
+            border-radius: 8px; margin-bottom: 15px; display: block; margin-left: auto; margin-right: auto; outline: none;
+        }
+        button { padding: 10px; border: none; border-radius: 20px; cursor: pointer; font-weight: bold; background: #eee; font-size: 14px; min-width: 45px; }
+        button.active { background: #2196F3; color: white; }
+        .btn-ok { width: 100%; background: #4CAF50; color: white; margin-bottom: 8px; height: 50px; font-size: 18px; }
+        .btn-cancel { width: 100%; background: #f44336; color: white; height: 40px; }
+    </style>
+</head>
+<body>
+
+<div class="ui-panel" id="statsPanel">
+    <div id="pipeStats">Нарисуйте сеть и нажмите F</div>
+</div>
+
+<div id="dnPanel" class="dn-panel">
+    <button onclick="setDN('DN15', '#00BFFF')" style="background:#00BFFF; color:white;">15</button>
+    <button onclick="setDN('DN20', '#9C27B0')" style="background:#9C27B0; color:white;">20</button>
+    <button onclick="setDN('DN25', '#F44336')" style="background:#F44336; color:white;">25</button>
+    <button onclick="setDN('DN32', '#4CAF50')" style="background:#4CAF50; color:white;">32</button>
+    <button onclick="setDN('DN40', '#FFEB3B')" style="background:#FFEB3B; color:black;">40</button>
+    <button onclick="setDN('DN50', '#2196F3')" style="background:#2196F3; color:white;">50</button>
+</div>
+
+<div id="lengthInputContainer">
+    <label style="display:block; margin-bottom:10px; font-weight:bold; color:#2196F3">Длина (м):</label>
+    <input type="number" id="lenInput" step="0.1" inputmode="decimal">
+    <button class="btn-ok" onclick="confirmLength()">ОК</button>
+    <button class="btn-cancel" onclick="closeInput()">ОТМЕНА</button>
+</div>
+
+<div class="controls">
+    <button id="drawBtn" class="active" onclick="setMode('draw')">✏️</button>
+    <button id="diameterBtn" onclick="setMode('diameter')">Ø</button>
+    <button id="fittingBtn" onclick="generateFittings()">F</button>
+    <button id="sprinklerBtn" onclick="toggleSprinklers()">▲</button>
+    <button id="deleteBtn" onclick="setMode('delete')">🗑️</button>
+    <button id="panBtn" onclick="setMode('pan')">🖐️</button>
+    <button onclick="undo()">↩</button>
+    <button onclick="clearAll()" style="background:#333; color:white;">✖</button>
+</div>
+
+<canvas id="pipeCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('pipeCanvas');
+    const ctx = canvas.getContext('2d');
+    const lenInput = document.getElementById('lenInput');
+    const lenContainer = document.getElementById('lengthInputContainer');
+    
+    let pipes = [], sprinklers = [], fittings = [], mode = 'draw', scale = 1.0;
+    let offsetX = window.innerWidth/2, offsetY = window.innerHeight/2;
+    let isAction = false, highlightedPipeIdx = -1, currentSnapNode = null;
+    let currentDN = 'DN15', currentDNColor = '#00BFFF';
+    let lastPoint = {x:0,y:0,z:0}, currentWorld = {x:0,y:0,z:0}, lockedDir = {x:0,y:0,z:0}, lastM = {x:0,y:0};
+    let firstPoint = null, initialPinchDist = null; 
+
+    const isoX = Math.cos(Math.PI / 6), isoY = Math.sin(Math.PI / 6); 
+
+    function init() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; render(); }
+    function worldToScreen(wx, wy, wz) { return { x: ((wx - wy) * isoX) * scale + offsetX, y: ((wx + wy) * isoY - wz) * scale + offsetY }; }
+    function screenToWorld(sx, sy) { return { x: (sx - offsetX) / scale, y: (sy - offsetY) / scale }; }
+
+    function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Сетка
+        ctx.strokeStyle = '#eee'; ctx.lineWidth = 0.5;
+        const gs = 100 * scale;
+        for(let x = offsetX % gs; x < canvas.width; x += gs) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke(); }
+        for(let y = offsetY % gs; y < canvas.height; y += gs) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke(); }
+
+        let nodeMap = new Map();
+        pipes.forEach((p, i) => {
+            let p1 = worldToScreen(p.x1, p.y1, p.z1), p2 = worldToScreen(p.x2, p.y2, p.z2);
+            ctx.strokeStyle = p.color || '#2c3e50';
+            ctx.lineWidth = 3 * scale;
+            if (highlightedPipeIdx === i) ctx.setLineDash([6, 4]); else ctx.setLineDash([]);
+            ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke(); ctx.setLineDash([]);
+            
+            [ {x:p.x1,y:p.y1,z:p.z1}, {x:p.x2,y:p.y2,z:p.z2} ].forEach(pt => {
+                const key = `${pt.x.toFixed(0)},${pt.y.toFixed(0)},${pt.z.toFixed(0)}`;
+                if(!nodeMap.has(key)) nodeMap.set(key, []);
+                nodeMap.get(key).push(p);
+            });
+        });
+
+        // Фитинги
+        fittings.forEach(f => {
+            const pos = worldToScreen(f.x, f.y, f.z);
+            ctx.strokeStyle = f.color; ctx.fillStyle = "none"; ctx.lineWidth = 2 * scale;
+            const sz = 10 * scale;
+
+            if(f.type === 'coupling') { // Муфта
+                ctx.beginPath();
+                let ang = Math.atan2((f.d.x+f.d.y)*isoY-f.d.z, (f.d.x-f.d.y)*isoX) + Math.PI/2;
+                ctx.moveTo(pos.x + Math.cos(ang)*sz - Math.cos(ang-Math.PI/2)*2, pos.y + Math.sin(ang)*sz - Math.sin(ang-Math.PI/2)*2);
+                ctx.lineTo(pos.x - Math.cos(ang)*sz - Math.cos(ang-Math.PI/2)*2, pos.y - Math.sin(ang)*sz - Math.sin(ang-Math.PI/2)*2);
+                ctx.moveTo(pos.x + Math.cos(ang)*sz + Math.cos(ang-Math.PI/2)*2, pos.y + Math.sin(ang)*sz + Math.sin(ang-Math.PI/2)*2);
+                ctx.lineTo(pos.x - Math.cos(ang)*sz + Math.cos(ang-Math.PI/2)*2, pos.y - Math.sin(ang)*sz + Math.sin(ang-Math.PI/2)*2);
+                ctx.stroke();
+            } else if(f.type === 'elbow') { // Поворот L
+                ctx.beginPath();
+                f.dirs.forEach(d => {
+                    ctx.moveTo(pos.x, pos.y);
+                    let ex = (d.x-d.y)*isoX, ey = (d.x+d.y)*isoY - d.z;
+                    let mag = Math.hypot(ex, ey);
+                    ctx.lineTo(pos.x + (ex/mag)*sz, pos.y + (ey/mag)*sz);
+                });
+                ctx.stroke();
+            } else if(f.type === 'tee') { // Тройник T
+                ctx.beginPath();
+                f.dirs.forEach(d => {
+                    ctx.moveTo(pos.x, pos.y);
+                    let ex = (d.x-d.y)*isoX, ey = (d.x+d.y)*isoY - d.z;
+                    let mag = Math.hypot(ex, ey);
+                    ctx.lineTo(pos.x + (ex/mag)*sz, pos.y + (ey/mag)*sz);
+                });
+                ctx.stroke();
+            } else if(f.type === 'reducer') { // Переход
+                ctx.save(); ctx.translate(pos.x, pos.y);
+                let ang = Math.atan2((f.d.x+f.d.y)*isoY-f.d.z, (f.d.x-f.d.y)*isoX);
+                ctx.rotate(ang);
+                ctx.beginPath(); ctx.moveTo(sz, 0); ctx.lineTo(-sz/2, sz/1.5); ctx.lineTo(-sz/2, -sz/1.5); ctx.closePath();
+                ctx.stroke(); ctx.restore();
+            }
+        });
+
+        // Спринклеры
+        sprinklers.forEach(s => {
+            let pos = worldToScreen(s.x, s.y, s.z);
+            ctx.fillStyle = s.color; ctx.beginPath(); ctx.save(); ctx.translate(pos.x, pos.y);
+            let angle = Math.atan2((s.dir.x + s.dir.y) * isoY - s.dir.z, (s.dir.x - s.dir.y) * isoX);
+            ctx.rotate(angle); let sz = 12 * scale;
+            ctx.moveTo(sz, 0); ctx.lineTo(-sz/1.5, sz/1.2); ctx.lineTo(-sz/1.5, -sz/1.2); ctx.closePath(); ctx.fill(); ctx.restore();
+        });
+
+        // Узлы (только для режима рисования)
+        if(mode === 'draw' || mode === 'diameter') {
+            nodeMap.forEach((pList, key) => {
+                const [wx, wy, wz] = key.split(',').map(Number);
+                const pos = worldToScreen(wx, wy, wz);
+                if (firstPoint && Math.abs(wx-firstPoint.x)<1 && Math.abs(wy-firstPoint.y)<1) {
+                    ctx.fillStyle = '#FF5722'; ctx.fillRect(pos.x - 8*scale, pos.y - 8*scale, 16*scale, 16*scale);
+                } else {
+                    ctx.fillStyle = pList.length >= 3 ? '#f44336' : (pList.length === 2 ? '#2196F3' : '#9e9e9e');
+                    ctx.beginPath(); ctx.arc(pos.x, pos.y, 4 * scale, 0, Math.PI*2); ctx.fill();
+                }
+            });
+        }
+
+        if (isAction === 'draw') {
+            let p1 = worldToScreen(lastPoint.x, lastPoint.y, lastPoint.z), p2 = worldToScreen(currentWorld.x, currentWorld.y, currentWorld.z);
+            ctx.strokeStyle = '#2196F3'; ctx.lineWidth = 2; ctx.setLineDash([5, 5]);
+            ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke(); ctx.setLineDash([]);
+        }
+        updateStats();
+    }
+
+    function generateFittings() {
+        fittings = [];
+        let nodeMap = new Map();
+        pipes.forEach(p => {
+            [ {x:p.x1,y:p.y1,z:p.z1}, {x:p.x2,y:p.y2,z:p.z2} ].forEach(pt => {
+                const key = `${pt.x.toFixed(0)},${pt.y.toFixed(0)},${pt.z.toFixed(0)}`;
+                if(!nodeMap.has(key)) nodeMap.set(key, []);
+                nodeMap.get(key).push(p);
+            });
+        });
+
+        nodeMap.forEach((pList, key) => {
+            const [wx, wy, wz] = key.split(',').map(Number);
+            
+            if (pList.length === 2) {
+                const p1 = pList[0], p2 = pList[1];
+                const d1 = getDir(p1, {x:wx,y:wy,z:wz}), d2 = getDir(p2, {x:wx,y:wy,z:wz});
+                const isSameAxis = Math.abs(d1.x*d2.x + d1.y*d2.y + d1.z*d2.z) > 0.9;
+                const sameDN = p1.dn === p2.dn;
+
+                if (isSameAxis) {
+                    if (sameDN) fittings.push({type:'coupling', x:wx, y:wy, z:wz, color:p1.color, d:d1});
+                    else {
+                        const smallP = parseInt(p1.dn.slice(2)) < parseInt(p2.dn.slice(2)) ? p1 : p2;
+                        fittings.push({type:'reducer', x:wx, y:wy, z:wz, color:smallP.color, d:getDir(smallP, {x:wx,y:wy,z:wz}, true)});
+                    }
+                } else {
+                    const maxDNColor = parseInt(p1.dn.slice(2)) >= parseInt(p2.dn.slice(2)) ? p1.color : p2.color;
+                    fittings.push({type:'elbow', x:wx, y:wy, z:wz, color:maxDNColor, dirs:[d1, d2]});
+                    if (!sameDN) {
+                        const smallP = parseInt(p1.dn.slice(2)) < parseInt(p2.dn.slice(2)) ? p1 : p2;
+                        fittings.push({type:'reducer', x:wx, y:wy, z:wz, color:smallP.color, d:getDir(smallP, {x:wx,y:wy,z:wz}, true)});
+                    }
+                }
+            } else if (pList.length === 3) {
+                let maxDN = 0, maxColor = '';
+                pList.forEach(p => { 
+                    let val = parseInt(p.dn.slice(2)); 
+                    if(val > maxDN) { maxDN = val; maxColor = p.color; }
+                });
+                fittings.push({type:'tee', x:wx, y:wy, z:wz, color:maxColor, dirs: pList.map(p => getDir(p, {x:wx,y:wy,z:wz}))});
+                pList.forEach(p => {
+                    if(parseInt(p.dn.slice(2)) < maxDN) {
+                        fittings.push({type:'reducer', x:wx, y:wy, z:wz, color:p.color, d:getDir(p, {x:wx,y:wy,z:wz}, true)});
+                    }
+                });
+            }
+        });
+        render();
+    }
+
+    function getDir(p, node, reverse = false) {
+        let dx = (Math.abs(p.x1-node.x)<1 && Math.abs(p.y1-node.y)<1 && Math.abs(p.z1-node.z)<1) ? (p.x2-p.x1) : (p.x1-p.x2);
+        let dy = (Math.abs(p.x1-node.x)<1 && Math.abs(p.y1-node.y)<1 && Math.abs(p.z1-node.z)<1) ? (p.y2-p.y1) : (p.y1-p.y2);
+        let dz = (Math.abs(p.x1-node.x)<1 && Math.abs(p.y1-node.y)<1 && Math.abs(p.z1-node.z)<1) ? (p.z2-p.z1) : (p.z1-p.z2);
+        let mag = Math.hypot(dx, dy, dz);
+        return reverse ? {x:dx/mag, y:dy/mag, z:dz/mag} : {x:-dx/mag, y:-dy/mag, z:-dz/mag};
+    }
+
+    function handleStart(x, y) {
+        if (lenContainer.style.display === 'block') return;
+        if (mode === 'pan') { isAction = 'pan'; lastM = {x, y}; return; }
+        if (mode === 'draw') {
+            isAction = 'draw';
+            lastPoint = currentSnapNode ? {...currentSnapNode} : (pipes.length===0 ? (firstPoint={...screenToWorld(x,y),z:0}) : {...screenToWorld(x,y),z:lastPoint.z});
+            currentWorld = {...lastPoint};
+        }
+        if (mode === 'diameter' && highlightedPipeIdx !== -1) {
+            pipes[highlightedPipeIdx].dn = currentDN; pipes[highlightedPipeIdx].color = currentDNColor;
+            render();
+        }
+        if (mode === 'delete' && highlightedPipeIdx !== -1) {
+            pipes.splice(highlightedPipeIdx, 1); if(pipes.length===0) firstPoint=null;
+            render();
+        }
+    }
+
+    function handleMove(x, y) {
+        if (isAction === 'pan') { offsetX += x - lastM.x; offsetY += y - lastM.y; lastM = {x, y}; render(); return; }
+        highlightedPipeIdx = -1; currentSnapNode = null;
+        pipes.forEach((p, i) => {
+            let s1 = worldToScreen(p.x1, p.y1, p.z1), s2 = worldToScreen(p.x2, p.y2, p.z2);
+            if (Math.hypot(x-s1.x, y-s1.y) < 30) currentSnapNode = {x:p.x1, y:p.y1, z:p.z1};
+            if (Math.hypot(x-s2.x, y-s2.y) < 30) currentSnapNode = {x:p.x2, y:p.y2, z:p.z2};
+            let l2 = (s1.x-s2.x)**2 + (s1.y-s2.y)**2;
+            if(l2>0){
+                let t = Math.max(0, Math.min(1, ((x-s1.x)*(s2.x-s1.x) + (y-s1.y)*(s2.y-s1.y)) / l2));
+                if (Math.hypot(x-(s1.x+t*(s2.x-s1.x)), y-(s1.y+t*(s2.y-s1.y))) < 15) highlightedPipeIdx = i;
+            }
+        });
+        if (isAction === 'draw') {
+            let pS = worldToScreen(lastPoint.x, lastPoint.y, lastPoint.z);
+            let dx = (x - pS.x)/scale, dy = (y - pS.y)/scale;
+            let ang = (Math.atan2(dy, dx)*180/Math.PI+360)%360;
+            const ds = [{ang:30,x:1,y:0,z:0},{ang:150,x:0,y:1,z:0},{ang:210,x:-1,y:0,z:0},{ang:330,x:0,y:-1,z:0},{ang:90,x:0,y:0,z:-1,n:"Z"},{ang:270,x:0,y:0,z:1,n:"Z"}];
+            let locked = ds.reduce((p, c) => Math.abs(c.ang-ang) < Math.abs(p.ang-ang) ? c : p);
+            lockedDir = locked;
+            if(locked.n === "Z") currentWorld = {x: lastPoint.x, y: lastPoint.y, z: lastPoint.z - dy};
+            else { let d = Math.hypot(dx,dy); currentWorld = {x:lastPoint.x + locked.x*d*1.15, y:lastPoint.y + locked.y*d*1.15, z:lastPoint.z}; }
+        }
+        render();
+    }
+
+    function confirmLength() {
+        const val = parseFloat(lenInput.value); if (isNaN(val) || val <= 0) { closeInput(); return; }
+        let p2 = { x: lastPoint.x + lockedDir.x*val*100, y: lastPoint.y + lockedDir.y*val*100, z: lastPoint.z + (lockedDir.n==="Z"?lockedDir.z*val*100:0) };
+        pipes.push({x1:lastPoint.x, y1:lastPoint.y, z1:lastPoint.z, x2:p2.x, y2:p2.y, z2:p2.z, len:val, dn:currentDN, color:currentDNColor});
+        lastPoint = p2; render(); closeInput();
+    }
+
+    function closeInput() { lenContainer.style.display = 'none'; isAction = false; render(); }
+    function showInput() { lenContainer.style.display = 'block'; lenInput.value = "1.0"; setTimeout(()=>lenInput.select(), 100); }
+
+    canvas.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY));
+    window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
+    window.addEventListener('mouseup', () => { if (isAction === 'draw') showInput(); isAction = false; render(); });
+    canvas.addEventListener('touchstart', e => { let t = e.touches[0]; handleMove(t.clientX, t.clientY); handleStart(t.clientX, t.clientY); e.preventDefault(); }, {passive:false});
+    canvas.addEventListener('touchmove', e => { let t = e.touches[0]; handleMove(t.clientX, t.clientY); e.preventDefault(); }, {passive:false});
+    canvas.addEventListener('touchend', () => { if (isAction === 'draw') showInput(); isAction = false; render(); });
+
+    function toggleSprinklers() { if (sprinklers.length > 0) sprinklers = []; else autoAssignSprinklers(); render(); }
+    function autoAssignSprinklers() {
+        sprinklers = []; let nodes = new Map();
+        pipes.forEach(p => { [ `${p.x1.toFixed(0)},${p.y1.toFixed(0)},${p.z1.toFixed(0)}`, `${p.x2.toFixed(0)},${p.y2.toFixed(0)},${p.z2.toFixed(0)}` ].forEach(k => nodes.set(k, (nodes.get(k)||0)+1)); });
+        pipes.forEach(p => {
+            [{x:p.x1, y:p.y1, z:p.z1, o:{x:p.x2, y:p.y2, z:p.z2}}, {x:p.x2, y:p.y2, z:p.z2, o:{x:p.x1, y:p.y1, z:p.z1}}].forEach(n => {
+                const isEntry = firstPoint && Math.abs(n.x-firstPoint.x)<5;
+                if (nodes.get(`${n.x.toFixed(0)},${n.y.toFixed(0)},${n.z.toFixed(0)}`) === 1 && !isEntry) 
+                    sprinklers.push({x:n.x, y:n.y, z:n.z, color:p.color, dir:{x:n.x-n.o.x, y:n.y-n.o.y, z:n.z-n.o.z}});
+            });
+        });
+    }
+
+    function setMode(m) { mode = m; document.getElementById('dnPanel').style.display = (m === 'diameter' ? 'flex' : 'none'); render(); }
+    function setDN(dn, c) { currentDN = dn; currentDNColor = c; }
+    function updateStats() {
+        let pStats = {}, fStats = {elbow:0, tee:0, coupling:0, reducer:0};
+        pipes.forEach(p => { pStats[p.dn] = (pStats[p.dn]||0) + p.len; });
+        fittings.forEach(f => { fStats[f.type]++; });
+        let h = `<strong>Трубы:</strong><br>`;
+        for(let d in pStats) h += `${d}: ${pStats[d].toFixed(1)} м<br>`;
+        h += `<hr><strong>Фитинги:</strong><br>Углы: ${fStats.elbow}<br>Тройники: ${fStats.tee}<br>Муфты: ${fStats.coupling}<br>Переходы: ${fStats.reducer}`;
+        document.getElementById('pipeStats').innerHTML = h;
+    }
+    function undo() { pipes.pop(); render(); }
+    function clearAll() { if(confirm("Очистить?")) { pipes=[]; sprinklers=[]; fittings=[]; firstPoint=null; render(); } }
+    init();
+</script>
+</body>
+</html>
