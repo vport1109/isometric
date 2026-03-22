@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BIM Pipe Pro - Fix Rotation</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #f8f9fa; font-family: 'Segoe UI', sans-serif; touch-action: none; }
+        canvas { display: block; position: absolute; top: 0; left: 0; z-index: 1; }
+        * { -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+
+        #lengthInputContainer {
+            position: fixed; top: 30%; left: 50%; transform: translate(-50%, -50%);
+            background: white; padding: 20px; border-radius: 15px; box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+            display: none; border: 4px solid #2196F3; text-align: center; width: 240px; z-index: 1000;
+        }
+        #lengthInputContainer input { 
+            width: 100%; padding: 12px; font-size: 28px; border: 2px solid #ddd; 
+            border-radius: 10px; margin-bottom: 15px; display: block; text-align: center; box-sizing: border-box;
+            -webkit-user-select: text;
+        }
+        .controls-container {
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); 
+            display: flex; flex-direction: column; gap: 10px; align-items: center; z-index: 100;
+        }
+        .controls-row {
+            display: flex; gap: 8px; background: rgba(255,255,255,0.98); padding: 10px; 
+            border-radius: 50px; box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+        }
+        button { padding: 12px; border: none; border-radius: 20px; cursor: pointer; font-weight: bold; background: #eee; font-size: 14px; min-width: 50px; }
+        button.active { background: #2196F3; color: white; }
+        .btn-ok { width: 100%; background: #4CAF50 !important; color: white; height: 55px; font-size: 20px; }
+    </style>
+</head>
+<body>
+
+<div id="lengthInputContainer">
+    <form onsubmit="confirmLength(event); return false;">
+        <label style="font-weight:bold; color:#2196F3">Length (m):</label>
+        <input type="number" id="lenInput" step="0.1" inputmode="decimal">
+        <button type="submit" class="btn-ok">OK / GO ↵</button>
+    </form>
+</div>
+
+<div class="controls-container">
+    <div class="controls-row">
+        <button onclick="rotateView()">🔄 Поворот</button>
+        <button onclick="undo()">↩</button>
+        <button onclick="clearAll()" style="background:#333; color:white;">✖</button>
+    </div>
+    <div class="controls-row">
+        <button id="drawBtn" class="active" onclick="setMode('draw')">✏️</button>
+        <button id="panBtn" onclick="setMode('pan')">🖐️</button>
+        <button onclick="generateFittings()">F</button>
+    </div>
+</div>
+
+<canvas id="pipeCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('pipeCanvas');
+    const ctx = canvas.getContext('2d');
+    const lenInput = document.getElementById('lenInput');
+    const lenContainer = document.getElementById('lengthInputContainer');
+    
+    let pipes = [], fittings = [], mode = 'draw', scale = 1.0;
+    let offsetX = window.innerWidth/2, offsetY = window.innerHeight/2;
+    let isAction = false, lastM = {x:0, y:0};
+    let lastPoint = {x:0,y:0,z:0}, currentWorld = {x:0,y:0,z:0}, lockedDir = {x:0,y:0,z:0};
+    let firstPoint = null, viewRotation = 0;
+
+    const isoX = Math.cos(Math.PI / 6), isoY = Math.sin(Math.PI / 6); 
+
+    function init() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; render(); }
+
+    function worldToScreen(wx, wy, wz) {
+        let rx, ry;
+        if (viewRotation === 0) { rx = wx; ry = wy; }
+        else if (viewRotation === 1) { rx = -wy; ry = wx; }
+        else if (viewRotation === 2) { rx = -wx; ry = -wy; }
+        else { rx = wy; ry = -wx; }
+        return { x: ((rx - ry) * isoX) * scale + offsetX, y: ((rx + ry) * isoY - wz) * scale + offsetY };
+    }
+
+    function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Сетка
+        ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 0.5;
+        for(let i=-2000; i<=2000; i+=200) {
+            let p1 = worldToScreen(i, -2000, 0), p2 = worldToScreen(i, 2000, 0);
+            ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+            let p3 = worldToScreen(-2000, i, 0), p4 = worldToScreen(2000, i, 0);
+            ctx.beginPath(); ctx.moveTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y); ctx.stroke();
+        }
+
+        pipes.forEach(p => {
+            let p1 = worldToScreen(p.x1, p.y1, p.z1), p2 = worldToScreen(p.x2, p.y2, p.z2);
+            ctx.strokeStyle = '#2196F3'; ctx.lineWidth = 4 * scale;
+            ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
+        });
+
+        fittings.forEach(f => {
+            let p = worldToScreen(f.x, f.y, f.z);
+            ctx.fillStyle = "#000"; ctx.beginPath(); ctx.arc(p.x, p.y, 5*scale, 0, Math.PI*2); ctx.fill();
+        });
+
+        if (isAction === 'draw') {
+            let p1 = worldToScreen(lastPoint.x, lastPoint.y, lastPoint.z), p2 = worldToScreen(currentWorld.x, currentWorld.y, currentWorld.z);
+            ctx.strokeStyle = '#ff9800'; ctx.setLineDash([5, 5]); ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke(); ctx.setLineDash([]);
+        }
+    }
+
+    function handleStart(x, y) {
+        if (mode === 'pan') { isAction = 'pan'; lastM = {x, y}; return; }
+        if (mode === 'draw') {
+            isAction = 'draw';
+            pipes.forEach(p => {
+                let s1 = worldToScreen(p.x1, p.y1, p.z1), s2 = worldToScreen(p.x2, p.y2, p.z2);
+                if (Math.hypot(x-s1.x, y-s1.y) < 30) lastPoint = {x:p.x1, y:p.y1, z:p.z1};
+                if (Math.hypot(x-s2.x, y-s2.y) < 30) lastPoint = {x:p.x2, y:p.y2, z:p.z2};
+            });
+            currentWorld = {...lastPoint};
+        }
+        render();
+    }
+
+    function handleMove(x, y) {
+        if (isAction === 'pan') { offsetX += x - lastM.x; offsetY += y - lastM.y; lastM = {x, y}; render(); return; }
+        if (isAction === 'draw') {
+            let pS = worldToScreen(lastPoint.x, lastPoint.y, lastPoint.z);
+            let dx = (x - pS.x), dy = (y - pS.y);
+            
+            // 1. Считаем физический угол движения пальца
+            let screenAng = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+            
+            // 2. Корректируем этот угол на текущий поворот вида
+            // Каждый поворот вида — это шаг в 90 градусов
+            let effectiveAng = (screenAng + (viewRotation * 90)) % 360;
+
+            // 3. Базовые направления (в мировых осях)
+            const ds = [
+                {ang:30, x:1, y:0, z:0}, {ang:150, x:0, y:1, z:0}, 
+                {ang:210, x:-1, y:0, z:0}, {ang:330, x:0, y:-1, z:0},
+                {ang:90, x:0, y:0, z:-1, n:"Z"}, {ang:270, x:0, y:0, z:1, n:"Z"}
+            ];
+
+            // Находим ближайшее соответствие
+            lockedDir = ds.reduce((p, c) => {
+                let diffP = Math.abs(p.ang - effectiveAng); if(diffP > 180) diffP = 360 - diffP;
+                let diffC = Math.abs(c.ang - effectiveAng); if(diffC > 180) diffC = 360 - diffC;
+                return diffC < diffP ? c : p;
+            });
+            
+            let dist = Math.hypot(dx, dy) / scale;
+            if(lockedDir.n === "Z") {
+                currentWorld = {x: lastPoint.x, y: lastPoint.y, z: lastPoint.z - dy/scale};
+            } else {
+                currentWorld = {x: lastPoint.x + lockedDir.x*dist*1.15, y: lastPoint.y + lockedDir.y*dist*1.15, z: lastPoint.z};
+            }
+        }
+        render();
+    }
+
+    function confirmLength(e) {
+        if(e) e.preventDefault();
+        const val = parseFloat(lenInput.value);
+        if (!isNaN(val) && val > 0) {
+            let mult = 100;
+            let p2 = {
+                x: lastPoint.x + (lockedDir.x || 0) * val * mult,
+                y: lastPoint.y + (lockedDir.y || 0) * val * mult,
+                z: lastPoint.z + (lockedDir.n === "Z" ? (lockedDir.z || 0) * val * mult : 0)
+            };
+            pipes.push({x1:lastPoint.x, y1:lastPoint.y, z1:lastPoint.z, x2:p2.x, y2:p2.y, z2:p2.z, len:val});
+            lastPoint = p2;
+        }
+        closeInput();
+    }
+
+    function showInput() { lenContainer.style.display = 'block'; lenInput.value = ""; lenInput.focus(); }
+    function closeInput() { lenContainer.style.display = 'none'; isAction = false; render(); }
+    function rotateView() { viewRotation = (viewRotation + 1) % 4; render(); }
+
+    canvas.addEventListener('touchstart', e => { if (e.touches.length === 1) handleStart(e.touches[0].clientX, e.touches[0].clientY); }, {passive:false});
+    canvas.addEventListener('touchmove', e => { if (e.touches.length === 1) handleMove(e.touches[0].clientX, e.touches[0].clientY); }, {passive:false});
+    canvas.addEventListener('touchend', () => { if (isAction === 'draw') showInput(); });
+
+    function setMode(m) { mode = m; document.getElementById('drawBtn').className = m==='draw'?'active':''; document.getElementById('panBtn').className = m==='pan'?'active':''; }
+    function undo() { pipes.pop(); render(); }
+    function clearAll() { if(confirm("Clear?")) { pipes=[]; lastPoint={x:0,y:0,z:0}; render(); } }
+    
+    function generateFittings() {
+        fittings = []; let nodes = new Map();
+        pipes.forEach(p => { 
+            [{x:p.x1,y:p.y1,z:p.z1},{x:p.x2,y:p.y2,z:p.z2}].forEach(pt => {
+                let k = `${Math.round(pt.x)},${Math.round(pt.y)},${Math.round(pt.z)}`;
+                nodes.set(k, (nodes.get(k)||0)+1);
+            });
+        });
+        nodes.forEach((count, key) => { if(count > 1) { let c = key.split(',').map(Number); fittings.push({x:c[0],y:c[1],z:c[2]}); }});
+        render();
+    }
+
+    init();
+    window.addEventListener('resize', init);
+</script>
+</body>
+</html>
