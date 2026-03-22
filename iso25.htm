@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>BIM Pipe Pro - Smart Reducers</title>
+    <title>BIM Pipe Pro - Universal Zoom</title>
     <style>
         body { margin: 0; overflow: hidden; background: #f8f9fa; font-family: 'Segoe UI', sans-serif; touch-action: none; }
         canvas { display: block; }
@@ -85,18 +85,33 @@
     let currentDN = 'DN15', currentDNColor = '#00BFFF';
     let lastPoint = {x:0,y:0,z:0}, currentWorld = {x:0,y:0,z:0}, lockedDir = {x:0,y:0,z:0}, lastM = {x:0,y:0};
     let firstPoint = null; 
+    let initialPinchDist = null;
 
     const isoX = Math.cos(Math.PI / 6), isoY = Math.sin(Math.PI / 6); 
 
     function init() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; render(); }
     function worldToScreen(wx, wy, wz) { return { x: ((wx - wy) * isoX) * scale + offsetX, y: ((wx + wy) * isoY - wz) * scale + offsetY }; }
     function screenToWorld(sx, sy) { return { x: (sx - offsetX) / scale, y: (sy - offsetY) / scale }; }
-
     function getPipeThickness(dn) { return Math.max(3, parseInt(dn.slice(2)) / 5); }
+
+    // ZOOM МЫШКОЙ
+    canvas.addEventListener('wheel', e => {
+        e.preventDefault();
+        const zoomSpeed = 0.001;
+        const delta = -e.deltaY;
+        const oldScale = scale;
+        scale *= (1 + delta * zoomSpeed);
+        scale = Math.min(Math.max(0.1, scale), 5);
+        
+        // Зум в точку курсора
+        const ratio = 1 - scale / oldScale;
+        offsetX += (e.clientX - offsetX) * ratio;
+        offsetY += (e.clientY - offsetY) * ratio;
+        render();
+    }, { passive: false });
 
     function render() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
         ctx.strokeStyle = '#eee'; ctx.lineWidth = 0.5;
         const gs = 100 * scale;
         for(let x = offsetX % gs; x < canvas.width; x += gs) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke(); }
@@ -114,9 +129,7 @@
             const thick = getPipeThickness(f.dn) * scale;
             const fitThick = thick * 1.33;
             const fitLen = thick * 2;
-            
             ctx.strokeStyle = "#000000"; ctx.fillStyle = "#000000";
-
             if (f.type === 'elbow' || f.type === 'tee') {
                 ctx.lineWidth = fitThick;
                 ctx.beginPath(); ctx.arc(pos.x, pos.y, fitThick/2, 0, Math.PI*2); ctx.fill();
@@ -128,7 +141,6 @@
                     ctx.stroke();
                 });
             }
-
             if (f.type === 'reducer') {
                 let ex = (f.d.x-f.d.y)*isoX, ey = (f.d.x+f.d.y)*isoY - f.d.z;
                 let mag = Math.hypot(ex, ey);
@@ -173,78 +185,8 @@
         updateStats();
     }
 
-    lenInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); confirmLength(); }
-    });
+    lenInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); confirmLength(); } });
     document.getElementById('btnOkManual').onclick = confirmLength;
-
-    function getVectorAwayFromNode(p, node) {
-        let dx = (Math.abs(p.x1-node.x)<2 && Math.abs(p.y1-node.y)<2 && Math.abs(p.z1-node.z)<2) ? (p.x2-p.x1) : (p.x1-p.x2);
-        let dy = (Math.abs(p.x1-node.x)<2 && Math.abs(p.y1-node.y)<2 && Math.abs(p.z1-node.z)<2) ? (p.y2-p.y1) : (p.y1-p.y2);
-        let dz = (Math.abs(p.x1-node.x)<2 && Math.abs(p.y1-node.y)<2 && Math.abs(p.z1-node.z)<2) ? (p.z2-p.z1) : (p.z1-p.z2);
-        let m = Math.hypot(dx, dy, dz);
-        return { x: dx/m, y: dy/m, z: dz/m };
-    }
-
-    function toggleNozzles() {
-        if (nozzles.length > 0) { nozzles = []; } 
-        else {
-            nozzles = []; 
-            let nodes = new Map();
-            pipes.forEach(p => { 
-                [ {x:p.x1, y:p.y1, z:p.z1}, {x:p.x2, y:p.y2, z:p.z2} ].forEach(pt => {
-                    const k = `${pt.x.toFixed(0)},${pt.y.toFixed(0)},${pt.z.toFixed(0)}`;
-                    if(!nodes.has(k)) nodes.set(k, {count:0, pt:pt, pipe:p});
-                    nodes.get(k).count++;
-                });
-            });
-            nodes.forEach((data, k) => {
-                const isStart = firstPoint && Math.abs(data.pt.x - firstPoint.x) < 5 && Math.abs(data.pt.y - firstPoint.y) < 5 && Math.abs(data.pt.z - firstPoint.z) < 5;
-                if (data.count === 1 && !isStart) {
-                    let dir = getVectorAwayFromNode(data.pipe, data.pt);
-                    nozzles.push({x:data.pt.x, y:data.pt.y, z:data.pt.z, color:data.pipe.color, dn: data.pipe.dn, dir:dir});
-                }
-            });
-        }
-        render();
-    }
-
-    function generateFittings() {
-        fittings = []; let nodeMap = new Map();
-        pipes.forEach(p => { 
-            [{x:p.x1,y:p.y1,z:p.z1},{x:p.x2,y:p.y2,z:p.z2}].forEach(pt => {
-                const key = `${pt.x.toFixed(0)},${pt.y.toFixed(0)},${pt.z.toFixed(0)}`;
-                if(!nodeMap.has(key)) nodeMap.set(key, []); nodeMap.get(key).push(p);
-            });
-        });
-        nodeMap.forEach((pList, key) => {
-            const [wx, wy, wz] = key.split(',').map(Number);
-            if (pList.length >= 2) {
-                let maxVal = 0, maxDN = '';
-                pList.forEach(p => { let v = parseInt(p.dn.slice(2)); if(v > maxVal) { maxVal = v; maxDN = p.dn; } });
-                const isElbow = pList.length === 2 && !isStraight(pList[0], pList[1], {x:wx,y:wy,z:wz});
-                if (isElbow || pList.length === 3) fittings.push({type: isElbow?'elbow':'tee', x:wx,y:wy,z:wz, dirs:pList.map(p=>getVectorAwayFromNode(p,{x:wx,y:wy,z:wz})), dn:maxDN});
-                
-                // ЛОГИКА РЕДУКТОРА С ДВОЙНЫМ ИМЕНЕМ
-                pList.forEach(p => { 
-                    if(parseInt(p.dn.slice(2)) < maxVal) {
-                        fittings.push({
-                            type:'reducer', x:wx,y:wy,z:wz, 
-                            d:getVectorAwayFromNode(p,{x:wx,y:wy,z:wz}), 
-                            dn: maxDN, // Больший
-                            targetDN: p.dn // Меньший
-                        }); 
-                    }
-                });
-            }
-        });
-        render();
-    }
-
-    function isStraight(p1, p2, node) {
-        let v1 = getVectorAwayFromNode(p1, node), v2 = getVectorAwayFromNode(p2, node);
-        return Math.abs(v1.x*v2.x + v1.y*v2.y + v1.z*v2.z) > 0.9;
-    }
 
     function handleStart(x, y) {
         if (lenContainer.style.display === 'block') return;
@@ -289,44 +231,122 @@
         render();
     }
 
+    // TOUCH СОБЫТИЯ ДЛЯ ЗУМА ДВУМЯ ПАЛЬЦАМИ
+    canvas.addEventListener('touchstart', e => {
+        if (e.touches.length === 2) {
+            initialPinchDist = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+        } else {
+            let t = e.touches[0]; handleStart(t.clientX, t.clientY);
+        }
+        e.preventDefault();
+    }, {passive:false});
+
+    canvas.addEventListener('touchmove', e => {
+        if (e.touches.length === 2 && initialPinchDist) {
+            let dist = Math.hypot(e.touches[0].pageX - e.touches[1].pageX, e.touches[0].pageY - e.touches[1].pageY);
+            let zoom = dist / initialPinchDist;
+            let oldScale = scale;
+            scale = Math.min(Math.max(0.1, scale * zoom), 5);
+            let midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+            let midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            let ratio = 1 - scale / oldScale;
+            offsetX += (midX - offsetX) * ratio;
+            offsetY += (midY - offsetY) * ratio;
+            initialPinchDist = dist;
+            render();
+        } else {
+            handleMove(e.touches[0].clientX, e.touches[0].clientY);
+        }
+        e.preventDefault();
+    }, {passive:false});
+
+    canvas.addEventListener('touchend', e => {
+        if (e.touches.length < 2) initialPinchDist = null;
+        if (isAction === 'draw') showInput();
+        isAction = false; render();
+    });
+
+    // ОСТАЛЬНЫЕ ФУНКЦИИ
+    canvas.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY));
+    window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
+    window.addEventListener('mouseup', () => { if (isAction === 'draw') showInput(); isAction = false; render(); });
+
+    function toggleNozzles() {
+        if (nozzles.length > 0) { nozzles = []; } else {
+            nozzles = []; let nodes = new Map();
+            pipes.forEach(p => { 
+                [ {x:p.x1, y:p.y1, z:p.z1}, {x:p.x2, y:p.y2, z:p.z2} ].forEach(pt => {
+                    const k = `${pt.x.toFixed(0)},${pt.y.toFixed(0)},${pt.z.toFixed(0)}`;
+                    if(!nodes.has(k)) nodes.set(k, {count:0, pt:pt, pipe:p}); nodes.get(k).count++;
+                });
+            });
+            nodes.forEach((data) => {
+                const isStart = firstPoint && Math.abs(data.pt.x - firstPoint.x) < 5 && Math.abs(data.pt.y - firstPoint.y) < 5;
+                if (data.count === 1 && !isStart) {
+                    let dir = getVectorAwayFromNode(data.pipe, data.pt);
+                    nozzles.push({x:data.pt.x, y:data.pt.y, z:data.pt.z, color:data.pipe.color, dn: data.pipe.dn, dir:dir});
+                }
+            });
+        }
+        render();
+    }
+
+    function generateFittings() {
+        fittings = []; let nodeMap = new Map();
+        pipes.forEach(p => { 
+            [{x:p.x1,y:p.y1,z:p.z1},{x:p.x2,y:p.y2,z:p.z2}].forEach(pt => {
+                const key = `${pt.x.toFixed(0)},${pt.y.toFixed(0)},${pt.z.toFixed(0)}`;
+                if(!nodeMap.has(key)) nodeMap.set(key, []); nodeMap.get(key).push(p);
+            });
+        });
+        nodeMap.forEach((pList, key) => {
+            const [wx, wy, wz] = key.split(',').map(Number);
+            if (pList.length >= 2) {
+                let maxVal = 0; pList.forEach(p => { let v = parseInt(p.dn.slice(2)); if(v > maxVal) maxVal = v; });
+                let maxDN = "DN" + maxVal;
+                const isElbow = pList.length === 2 && !isStraight(pList[0], pList[1], {x:wx,y:wy,z:wz});
+                if (isElbow || pList.length === 3) fittings.push({type: isElbow?'elbow':'tee', x:wx,y:wy,z:wz, dirs:pList.map(p=>getVectorAwayFromNode(p,{x:wx,y:wy,z:wz})), dn:maxDN});
+                pList.forEach(p => { 
+                    if(parseInt(p.dn.slice(2)) < maxVal) {
+                        fittings.push({type:'reducer', x:wx,y:wy,z:wz, d:getVectorAwayFromNode(p,{x:wx,y:wy,z:wz}), dn: maxDN, targetDN: p.dn}); 
+                    }
+                });
+            }
+        });
+        render();
+    }
+
+    function getVectorAwayFromNode(p, node) {
+        let dx = (Math.abs(p.x1-node.x)<2 && Math.abs(p.y1-node.y)<2 && Math.abs(p.z1-node.z)<2) ? (p.x2-p.x1) : (p.x1-p.x2);
+        let dy = (Math.abs(p.x1-node.x)<2 && Math.abs(p.y1-node.y)<2 && Math.abs(p.z1-node.z)<2) ? (p.y2-p.y1) : (p.y1-p.y2);
+        let dz = (Math.abs(p.x1-node.x)<2 && Math.abs(p.y1-node.y)<2 && Math.abs(p.z1-node.z)<2) ? (p.z2-p.z1) : (p.z1-p.z2);
+        let m = Math.hypot(dx, dy, dz); return { x: dx/m, y: dy/m, z: dz/m };
+    }
+    function isStraight(p1, p2, node) {
+        let v1 = getVectorAwayFromNode(p1, node), v2 = getVectorAwayFromNode(p2, node);
+        return Math.abs(v1.x*v2.x + v1.y*v2.y + v1.z*v2.z) > 0.9;
+    }
     function confirmLength() {
-        const val = parseFloat(lenInput.value); 
-        if (isNaN(val) || val <= 0) { closeInput(); return; }
+        const val = parseFloat(lenInput.value); if (isNaN(val) || val <= 0) { closeInput(); return; }
         let p2 = { x: lastPoint.x + lockedDir.x*val*100, y: lastPoint.y + lockedDir.y*val*100, z: lastPoint.z + (lockedDir.n==="Z"?lockedDir.z*val*100:0) };
         pipes.push({x1:lastPoint.x, y1:lastPoint.y, z1:lastPoint.z, x2:p2.x, y2:p2.y, z2:p2.z, len:val, dn:currentDN, color:currentDNColor});
         lastPoint = p2; render(); closeInput();
     }
-
     function closeInput() { lenContainer.style.display = 'none'; isAction = false; render(); }
     function showInput() { lenContainer.style.display = 'block'; lenInput.value = "1.0"; setTimeout(()=> { lenInput.focus(); lenInput.select(); }, 100); }
-
-    canvas.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY));
-    window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
-    window.addEventListener('mouseup', () => { if (isAction === 'draw') showInput(); isAction = false; render(); });
-    canvas.addEventListener('touchstart', e => { let t = e.touches[0]; handleMove(t.clientX, t.clientY); handleStart(t.clientX, t.clientY); e.preventDefault(); }, {passive:false});
-    canvas.addEventListener('touchmove', e => { handleMove(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault(); }, {passive:false});
-    canvas.addEventListener('touchend', () => { if (isAction === 'draw') showInput(); isAction = false; render(); });
-
     function setMode(m) { mode = m; document.getElementById('dnPanel').style.display = (m === 'diameter' ? 'flex' : 'none'); render(); }
     function setDN(dn, c) { currentDN = dn; currentDNColor = c; }
-    
     function updateStats() {
         let pStats = {}, fMap = {}, nMap = {};
         pipes.forEach(p => { pStats[p.dn] = (pStats[p.dn]||0) + p.len; });
         fittings.forEach(f => {
-            let label = "";
-            if (f.type === 'elbow') label = 'Elbow ' + f.dn;
-            else if (f.type === 'tee') label = 'Tee ' + f.dn;
-            else if (f.type === 'reducer') label = `Reducer ${f.dn}-${f.targetDN.slice(2)}`; // DN32-25
+            let label = (f.type==='elbow'?'Elbow ':(f.type==='tee'?'Tee ':'Reducer '))+f.dn+(f.targetDN?'-'+f.targetDN.slice(2):'');
             fMap[label] = (fMap[label]||0) + 1;
         });
         nozzles.forEach(n => { let label = `Nozzle ${n.dn}`; nMap[label] = (nMap[label]||0) + 1; });
-        let h = `<strong>Pipes:</strong><br>`;
-        for(let d in pStats) h += `${d}: ${pStats[d].toFixed(1)} m<br>`;
-        h += `<hr><strong>Fittings:</strong><br>`;
-        Object.keys(fMap).sort().forEach(k => h += `${k}: ${fMap[k]} pcs<br>`);
-        h += `<hr><strong>Nozzles:</strong><br>`;
-        Object.keys(nMap).sort().forEach(k => h += `${k}: ${nMap[k]} pcs<br>`);
+        let h = `<strong>Pipes:</strong><br>`; for(let d in pStats) h += `${d}: ${pStats[d].toFixed(1)} m<br>`;
+        h += `<hr><strong>Fittings:</strong><br>`; Object.keys(fMap).sort().forEach(k => h += `${k}: ${fMap[k]} pcs<br>`);
+        h += `<hr><strong>Nozzles:</strong><br>`; Object.keys(nMap).sort().forEach(k => h += `${k}: ${nMap[k]} pcs<br>`);
         document.getElementById('pipeStats').innerHTML = h;
     }
     function undo() { pipes.pop(); if(pipes.length===0) firstPoint=null; render(); }
