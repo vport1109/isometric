@@ -1,0 +1,179 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Axonometric Pipe Designer</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a2e; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        canvas { display: block; background: #2c3e50; cursor: crosshair; }
+        .ui { 
+            position: absolute; top: 20px; left: 20px; 
+            background: rgba(0, 0, 0, 0.8); color: white; 
+            padding: 20px; border-radius: 12px; pointer-events: none;
+            border: 1px solid #444; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            max-width: 300px;
+        }
+        .ui b { color: #3498db; font-size: 1.2em; display: block; margin-bottom: 10px; }
+        .u-item { margin-bottom: 5px; font-size: 0.9em; opacity: 0.9; }
+        kbd { background: #444; padding: 2px 6px; border-radius: 4px; color: #f1c40f; font-family: monospace; }
+    </style>
+</head>
+<body>
+
+    <div class="ui">
+        <b>Pipe Drafter Pro</b>
+        <div class="u-item">• Рисуйте произвольно — линия сама ляжет на оси <kbd>30°, 90°, 150°, 180°</kbd></div>
+        <div class="u-item">• Каждая новая линия начинается с чистого листа.</div>
+        <div class="u-item">• Нажмите <kbd>Esc</kbd> чтобы очистить весь холст.</div>
+    </div>
+
+    <canvas id="c"></canvas>
+
+<script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    
+    let points = [];
+    let isDrawing = false;
+    let allPipes = [];
+
+    // Настройка размеров
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        redrawEverything();
+    }
+    window.onresize = resize;
+    resize();
+
+    // Разрешенные направления (8 векторов для 4-х осей)
+    const TARGET_DEG = [0, 30, 90, 150, 180, 210, 270, 330];
+
+    function getBestVector(dx, dy) {
+        let angle = Math.atan2(dy, dx);
+        let deg = (angle * 180 / Math.PI + 360) % 360;
+        
+        let best = TARGET_DEG[0];
+        let minDiff = Infinity;
+        TARGET_DEG.forEach(d => {
+            let diff = Math.abs(deg - d);
+            if (diff > 180) diff = 360 - diff;
+            if (diff < minDiff) {
+                minDiff = diff;
+                best = d;
+            }
+        });
+        
+        let rad = best * Math.PI / 180;
+        return { x: Math.cos(rad), y: Math.sin(rad) };
+    }
+
+    // Алгоритм упрощения Ramer-Douglas-Peucker
+    function simplify(pts, epsilon) {
+        if (pts.length < 3) return pts;
+        let dmax = 0, idx = 0;
+        for (let i = 1; i < pts.length - 1; i++) {
+            let d = Math.abs((pts[i].y - pts[0].y) * (pts[pts.length-1].x - pts[0].x) - (pts[i].x - pts[0].x) * (pts[pts.length-1].y - pts[0].y));
+            if (d > dmax) { dmax = d; idx = i; }
+        }
+        if (dmax > epsilon * 100) {
+            return simplify(pts.slice(0, idx + 1), epsilon).concat(simplify(pts.slice(idx), epsilon).slice(1));
+        }
+        return [pts[0], pts[pts.length - 1]];
+    }
+
+    function processLine(rawPoints) {
+        if (rawPoints.length < 2) return;
+        
+        // Упрощаем до ключевых точек излома
+        let simplified = simplify(rawPoints, 15);
+        let final = [{x: simplified[0].x, y: simplified[0].y}];
+        
+        for (let i = 1; i < simplified.length; i++) {
+            let last = final[i-1];
+            let curr = simplified[i];
+            let dx = curr.x - last.x;
+            let dy = curr.y - last.y;
+            let dist = Math.sqrt(dx*dx + dy*dy);
+            
+            if (dist < 15) continue;
+
+            let vec = getBestVector(dx, dy);
+            // Проекция: точка следует за реальным положением мыши вдоль оси
+            let dot = dx * vec.x + dy * vec.y;
+            
+            final.push({
+                x: last.x + vec.x * dot,
+                y: last.y + vec.y * dot
+            });
+        }
+        allPipes.push(final);
+    }
+
+    // --- Обработка ввода ---
+
+    window.onkeydown = (e) => { 
+        if (e.key === "Escape") { 
+            allPipes = []; 
+            redrawEverything(); 
+        }
+    };
+
+    canvas.onmousedown = (e) => { 
+        isDrawing = true; 
+        points = [{x: e.clientX, y: e.clientY}]; 
+        // Начинаем новый путь в контексте рисования, чтобы не было связи с прошлыми линиями
+        ctx.beginPath();
+    };
+
+    canvas.onmousemove = (e) => {
+        if (!isDrawing) return;
+        points.push({x: e.clientX, y: e.clientY});
+        
+        // Тонкий черновик линии (виден только пока ведем)
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+        ctx.lineWidth = 1;
+        ctx.lineTo(e.clientX, e.clientY);
+        ctx.stroke();
+    };
+
+    window.onmouseup = () => {
+        if (!isDrawing) return;
+        isDrawing = false;
+        processLine(points);
+        redrawEverything(); // Перерисовываем чисто
+    };
+
+    function redrawEverything() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        allPipes.forEach(p => {
+            ctx.lineCap = "round";
+            ctx.lineJoin = "round";
+            
+            // 1. Слой: Внешний черный контур
+            ctx.beginPath(); 
+            ctx.lineWidth = 22; 
+            ctx.strokeStyle = "#0d0d0d";
+            p.forEach((pt, i) => i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y));
+            ctx.stroke();
+            
+            // 2. Слой: Цвет трубы (синий металлик)
+            ctx.beginPath(); 
+            ctx.lineWidth = 18; 
+            ctx.strokeStyle = "#2980b9";
+            p.forEach((pt, i) => i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y));
+            ctx.stroke();
+            
+            // 3. Слой: Световой блик
+            ctx.beginPath(); 
+            ctx.lineWidth = 4; 
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+            p.forEach((pt, i) => i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y));
+            ctx.stroke();
+        });
+    }
+</script>
+</body>
+</html>
