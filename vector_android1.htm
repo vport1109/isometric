@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BIM Touch Drafter</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #f0f2f5; font-family: 'Segoe UI', sans-serif; touch-action: none; }
+        canvas { display: block; }
+
+        /* Панель статистики */
+        .stats-panel { 
+            position: fixed; top: 10px; left: 10px; background: white; padding: 12px; 
+            border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); z-index: 100; 
+            font-size: 12px; width: 200px; border: 1px solid #ddd;
+        }
+        .stats-panel b { color: #2196F3; display: block; margin-bottom: 5px; border-bottom: 1px solid #eee; }
+
+        /* Выбор диаметров */
+        .dn-selector {
+            position: fixed; bottom: 85px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 5px; background: white; padding: 8px;
+            border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); z-index: 90;
+        }
+        .dn-btn { width: 35px; height: 35px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; color: white; font-weight: bold; font-size: 10px; }
+        .dn-btn.active { border-color: #333; transform: scale(1.1); }
+
+        /* Кнопки управления */
+        .controls { 
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); 
+            display: flex; gap: 10px; background: white; padding: 10px 20px; 
+            border-radius: 50px; box-shadow: 0 5px 25px rgba(0,0,0,0.2); z-index: 100;
+        }
+        .control-btn { 
+            background: #eee; border: none; width: 45px; height: 45px; 
+            border-radius: 50%; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center;
+        }
+        .control-btn.active { background: #2196F3; color: white; }
+        .control-btn.red { background: #ff4757; color: white; }
+
+        hr { border: 0; border-top: 1px solid #eee; margin: 8px 0; }
+    </style>
+</head>
+<body>
+
+<div class="stats-panel" id="stats">
+    <b>Спецификация:</b>
+    <div id="statsData">Начните рисовать...</div>
+</div>
+
+<div class="dn-selector" id="dnPanel">
+    <button class="dn-btn active" onclick="setDN('DN15', '#00BFFF', this)" style="background:#00BFFF">15</button>
+    <button class="dn-btn" onclick="setDN('DN25', '#4CAF50', this)" style="background:#4CAF50">25</button>
+    <button class="dn-btn" onclick="setDN('DN50', '#F44336', this)" style="background:#F44336">50</button>
+    <button class="dn-btn" onclick="setDN('DN100', '#333', this)" style="background:#333">100</button>
+</div>
+
+<div class="controls">
+    <button class="control-btn active" id="drawBtn" onclick="setMode('draw')">✏️</button>
+    <button class="control-btn" id="panBtn" onclick="setMode('pan')">🖐️</button>
+    <button class="control-btn" onclick="undo()">↩</button>
+    <button class="control-btn red" onclick="clearAll()">✖</button>
+</div>
+
+<canvas id="c"></canvas>
+
+<script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    let pipes = [], fittings = [], mode = 'draw';
+    let scale = 1.0, offsetX = window.innerWidth/2, offsetY = window.innerHeight/2;
+    let isDrawing = false, currentPoints = [];
+    let currentDN = 'DN15', currentDNColor = '#00BFFF';
+    
+    // Изометрические коэффициенты
+    const isoX = Math.cos(Math.PI / 6);
+    const isoY = Math.sin(Math.PI / 6);
+
+    function init() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        render();
+    }
+
+    function toWorld(sx, sy) {
+        return {
+            x: (sx - offsetX) / scale,
+            y: (sy - offsetY) / scale
+        };
+    }
+
+    // Векторная магия для привязки к осям
+    const TARGET_DEG = [30, 90, 150, 210, 270, 330];
+    function getSnapVector(dx, dy) {
+        let angle = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+        let best = TARGET_DEG[0], minDiff = Infinity;
+        TARGET_DEG.forEach(d => {
+            let diff = Math.abs(angle - d);
+            if (diff > 180) diff = 360 - diff;
+            if (diff < minDiff) { minDiff = diff; best = d; }
+        });
+        let rad = best * Math.PI / 180;
+        return { x: Math.cos(rad), y: Math.sin(rad) };
+    }
+
+    // --- Обработка событий ---
+
+    canvas.addEventListener('touchstart', e => {
+        const t = e.touches[0];
+        const worldPos = toWorld(t.clientX, t.clientY);
+
+        if (mode === 'pan') {
+            this.lastP = {x: t.clientX, y: t.clientY};
+            return;
+        }
+
+        isDrawing = true;
+        // Логика авто-соединения (Snap to node)
+        let snapNode = findSnapNode(worldPos);
+        currentPoints = [snapNode || worldPos];
+    }, {passive: false});
+
+    window.addEventListener('touchmove', e => {
+        if (!isDrawing && mode !== 'pan') return;
+        const t = e.touches[0];
+
+        if (mode === 'pan') {
+            offsetX += t.clientX - this.lastP.x;
+            offsetY += t.clientY - this.lastP.y;
+            this.lastP = {x: t.clientX, y: t.clientY};
+        } else {
+            currentPoints.push(toWorld(t.clientX, t.clientY));
+        }
+        render();
+        e.preventDefault();
+    }, {passive: false});
+
+    window.addEventListener('touchend', () => {
+        if (isDrawing) {
+            processDrawing();
+            isDrawing = false;
+            autoGenerateFittings();
+            render();
+        }
+    });
+
+    // Нахождение ближайшего узла для соединения линий
+    function findSnapNode(pt) {
+        let threshold = 30 / scale;
+        for (let p of pipes) {
+            if (Math.hypot(pt.x - p.x1, pt.y - p.y1) < threshold) return {x: p.x1, y: p.y1};
+            if (Math.hypot(pt.x - p.x2, pt.y - p.y2) < threshold) return {x: p.x2, y: p.y2};
+        }
+        return null;
+    }
+
+    function processDrawing() {
+        if (currentPoints.length < 5) return;
+        
+        let start = currentPoints[0];
+        let end = currentPoints[currentPoints.length - 1];
+        
+        let dx = end.x - start.x;
+        let dy = end.y - start.y;
+        
+        if (Math.hypot(dx, dy) < 20 / scale) return;
+
+        let vec = getSnapVector(dx, dy);
+        let dist = dx * vec.x + dy * vec.y;
+
+        pipes.push({
+            x1: start.x, y1: start.y,
+            x2: start.x + vec.x * dist,
+            y2: start.y + vec.y * dist,
+            dn: currentDN,
+            color: currentDNColor,
+            len: Math.abs(dist) / 100 // Условные метры
+        });
+    }
+
+    function autoGenerateFittings() {
+        fittings = [];
+        let nodes = new Map();
+
+        pipes.forEach(p => {
+            [{x:p.x1, y:p.y1}, {x:p.x2, y:p.y2}].forEach(pt => {
+                let key = `${Math.round(pt.x)},${Math.round(pt.y)}`;
+                if (!nodes.has(key)) nodes.set(key, []);
+                nodes.get(key).push(p);
+            });
+        });
+
+        nodes.forEach((connectedPipes, key) => {
+            if (connectedPipes.length === 2) {
+                fittings.push({type: 'Elbow', pos: key, dn: connectedPipes[0].dn});
+            } else if (connectedPipes.length >= 3) {
+                fittings.push({type: 'Tee', pos: key, dn: connectedPipes[0].dn});
+            }
+        });
+    }
+
+    function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.save();
+        ctx.translate(offsetX, offsetY);
+        ctx.scale(scale, scale);
+
+        // Сетка
+        ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1/scale;
+        for(let i=-2000; i<2000; i+=100) {
+            ctx.beginPath(); ctx.moveTo(i, -2000); ctx.lineTo(i, 2000); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(-2000, i); ctx.lineTo(2000, i); ctx.stroke();
+        }
+
+        // Трубы
+        pipes.forEach(p => {
+            ctx.lineCap = 'round';
+            ctx.strokeStyle = p.color;
+            ctx.lineWidth = Math.max(2, parseInt(p.dn.slice(2))/4);
+            ctx.beginPath();
+            ctx.moveTo(p.x1, p.y1);
+            ctx.lineTo(p.x2, p.y2);
+            ctx.stroke();
+        });
+
+        // Фитинги (точки в местах соединений)
+        fittings.forEach(f => {
+            let [x, y] = f.pos.split(',').map(Number);
+            ctx.fillStyle = '#333';
+            ctx.beginPath();
+            ctx.arc(x, y, 6, 0, Math.PI*2);
+            ctx.fill();
+        });
+
+        // Временная линия при рисовании
+        if (isDrawing && currentPoints.length > 0) {
+            ctx.strokeStyle = '#999'; ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(currentPoints[0].x, currentPoints[0].y);
+            let last = currentPoints[currentPoints.length-1];
+            ctx.lineTo(last.x, last.y);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        ctx.restore();
+        updateStats();
+    }
+
+    function updateStats() {
+        let stats = { len: {}, fit: {Elbow: 0, Tee: 0} };
+        pipes.forEach(p => {
+            stats.len[p.dn] = (stats.len[p.dn] || 0) + p.len;
+        });
+        fittings.forEach(f => {
+            stats.fit[f.type]++;
+        });
+
+        let html = '';
+        for (let dn in stats.len) {
+            html += `${dn}: ${stats.len[dn].toFixed(2)} м<br>`;
+        }
+        html += `<hr>Отводы: ${stats.fit.Elbow} шт<br>Тройники: ${stats.fit.Tee} шт`;
+        document.getElementById('statsData').innerHTML = html;
+    }
+
+    // UI Функции
+    function setMode(m) { 
+        mode = m; 
+        document.querySelectorAll('.control-btn').forEach(b => b.classList.remove('active'));
+        if(m === 'draw') document.getElementById('drawBtn').classList.add('active');
+        if(m === 'pan') document.getElementById('panBtn').classList.add('active');
+    }
+
+    function setDN(dn, color, btn) {
+        currentDN = dn; currentDNColor = color;
+        document.querySelectorAll('.dn-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    }
+
+    function undo() { pipes.pop(); autoGenerateFittings(); render(); }
+    function clearAll() { if(confirm('Удалить всё?')) { pipes=[]; fittings=[]; render(); } }
+
+    window.addEventListener('resize', init);
+    init();
+
+</script>
+</body>
+</html>
