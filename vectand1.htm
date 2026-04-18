@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Pipe Designer: Clean Axes</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a2e; font-family: sans-serif; touch-action: none; }
+        canvas { display: block; background: #2c3e50; }
+        .ui { 
+            position: absolute; top: 10px; left: 10px; 
+            background: rgba(0, 0, 0, 0.7); color: white; 
+            padding: 10px 15px; border-radius: 8px; pointer-events: none;
+            font-size: 13px; z-index: 10; border: 1px solid #444;
+        }
+        .controls {
+            position: absolute; bottom: 25px; left: 50%;
+            transform: translateX(-50%); display: flex; gap: 10px; z-index: 20;
+        }
+        .btn {
+            background: #34495e; color: white; border: none;
+            padding: 12px 20px; border-radius: 6px; font-weight: bold;
+            cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            -webkit-tap-highlight-color: transparent;
+        }
+        .btn-undo { background: #f39c12; }
+        .btn-clear { background: #c0392b; }
+    </style>
+</head>
+<body>
+
+    <div class="ui">
+        <b>Умная фильтрация:</b><br>
+        • Изломы только при смене осей<br>
+        • Привязка к узлам включена
+    </div>
+
+    <div class="controls">
+        <button class="btn btn-undo" onclick="undo()">Отмена</button>
+        <button class="btn btn-clear" onclick="clearAll()">Очистить</button>
+    </div>
+
+    <canvas id="c"></canvas>
+
+<script>
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    
+    let allPipes = [];
+    let points = [];
+    let isDrawing = false;
+    let view = { x: 0, y: 0, zoom: 1 };
+    let lastTouchDist = 0;
+    let lastTouchCenter = null;
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        redrawEverything();
+    }
+    window.onresize = resize;
+    resize();
+
+    function toWorld(x, y) {
+        return { x: (x - view.x) / view.zoom, y: (y - view.y) / view.zoom };
+    }
+
+    function findNearestNode(worldPos) {
+        let minDist = 35 / view.zoom;
+        let nearest = null;
+        allPipes.forEach(pipe => {
+            pipe.forEach(node => {
+                let d = Math.hypot(worldPos.x - node.x, worldPos.y - node.y);
+                if (d < minDist) { minDist = d; nearest = { x: node.x, y: node.y }; }
+            });
+        });
+        return nearest;
+    }
+
+    const TARGET_DEG = [0, 30, 90, 150, 180, 210, 270, 330];
+    function getBestVector(dx, dy) {
+        let angle = Math.atan2(dy, dx);
+        let deg = (angle * 180 / Math.PI + 360) % 360;
+        let best = TARGET_DEG[0], minDiff = Infinity;
+        TARGET_DEG.forEach(d => {
+            let diff = Math.abs(deg - d);
+            if (diff > 180) diff = 360 - diff;
+            if (diff < minDiff) { minDiff = diff; best = d; }
+        });
+        let rad = best * Math.PI / 180;
+        return { x: Math.cos(rad), y: Math.sin(rad) };
+    }
+
+    function simplify(pts, epsilon) {
+        if (pts.length < 3) return pts;
+        let dmax = 0, idx = 0;
+        for (let i = 1; i < pts.length - 1; i++) {
+            let d = Math.abs((pts[i].y - pts[0].y) * (pts[pts.length-1].x - pts[0].x) - (pts[i].x - pts[0].x) * (pts[pts.length-1].y - pts[0].y));
+            if (d > dmax) { dmax = d; idx = i; }
+        }
+        if (dmax > epsilon * 100) {
+            return simplify(pts.slice(0, idx + 1), epsilon).concat(simplify(pts.slice(idx), epsilon).slice(1));
+        }
+        return [pts[0], pts[pts.length - 1]];
+    }
+
+    function processLine(rawPoints) {
+        if (rawPoints.length < 2) return;
+        let simplified = simplify(rawPoints, 10 / view.zoom);
+        
+        // 1. Сначала строим точки по осям
+        let axisPoints = [{x: simplified[0].x, y: simplified[0].y}];
+        for (let i = 1; i < simplified.length; i++) {
+            let last = axisPoints[axisPoints.length - 1];
+            let curr = simplified[i];
+            let dx = curr.x - last.x, dy = curr.y - last.y;
+            if (Math.hypot(dx, dy) < 15 / view.zoom) continue;
+            
+            let vec = getBestVector(dx, dy);
+            let dot = dx * vec.x + dy * vec.y;
+            axisPoints.push({ x: last.x + vec.x * dot, y: last.y + vec.y * dot, vx: vec.x, vy: vec.y });
+        }
+
+        // 2. ФИЛЬТРАЦИЯ: Удаляем точки на одной оси
+        if (axisPoints.length < 3) {
+            allPipes.push(axisPoints);
+            return;
+        }
+
+        let final = [axisPoints[0]];
+        for (let i = 1; i < axisPoints.length - 1; i++) {
+            let pPrev = axisPoints[i-1];
+            let pCurr = axisPoints[i];
+            let pNext = axisPoints[i+1];
+
+            // Проверяем векторы направлений
+            let v1 = { x: pCurr.x - pPrev.x, y: pCurr.y - pPrev.y };
+            let v2 = { x: pNext.x - pCurr.x, y: pNext.y - pCurr.y };
+            
+            // Нормализуем
+            let m1 = Math.hypot(v1.x, v1.y);
+            let m2 = Math.hypot(v2.x, v2.y);
+            
+            // Скалярное произведение для проверки коллинеарности
+            let dot = (v1.x/m1 * v2.x/m2) + (v1.y/m1 * v2.y/m2);
+
+            // Если направление изменилось (dot < 0.99), оставляем точку
+            if (dot < 0.999) {
+                final.push(pCurr);
+            }
+        }
+        final.push(axisPoints[axisPoints.length - 1]);
+        
+        allPipes.push(final);
+    }
+
+    // --- Обработка событий (Touch) ---
+
+    canvas.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 1) {
+            isDrawing = true;
+            let touchPos = toWorld(e.touches[0].clientX, e.touches[0].clientY);
+            let snapped = findNearestNode(touchPos);
+            points = [snapped ? snapped : touchPos];
+        } else if (e.touches.length === 2) {
+            isDrawing = false;
+            const details = getTouchDetails(e.touches);
+            lastTouchDist = details.dist;
+            lastTouchCenter = details.center;
+        }
+    }, {passive: false});
+
+    window.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 1 && isDrawing) {
+            points.push(toWorld(e.touches[0].clientX, e.touches[0].clientY));
+            redrawEverything();
+            ctx.save();
+            ctx.setTransform(view.zoom, 0, 0, view.zoom, view.x, view.y);
+            ctx.beginPath(); ctx.strokeStyle = "rgba(255,255,255,0.3)";
+            points.forEach((pt, i) => i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y));
+            ctx.stroke(); ctx.restore();
+        } else if (e.touches.length === 2) {
+            const details = getTouchDetails(e.touches);
+            view.x += (details.center.x - lastTouchCenter.x);
+            view.y += (details.center.y - lastTouchCenter.y);
+            const zoomFactor = details.dist / lastTouchDist;
+            const newZoom = Math.min(Math.max(view.zoom * zoomFactor, 0.2), 5);
+            view.x = details.center.x - (details.center.x - view.x) * (newZoom / view.zoom);
+            view.y = details.center.y - (details.center.y - view.y) * (newZoom / view.zoom);
+            view.zoom = newZoom;
+            lastTouchDist = details.dist;
+            lastTouchCenter = details.center;
+            redrawEverything();
+        }
+        e.preventDefault();
+    }, {passive: false});
+
+    window.addEventListener('touchend', () => {
+        if (isDrawing) { isDrawing = false; processLine(points); redrawEverything(); }
+    });
+
+    function getTouchDetails(touches) {
+        const t1 = touches[0], t2 = touches[1];
+        return { 
+            dist: Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY),
+            center: { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 }
+        };
+    }
+
+    canvas.addEventListener('wheel', (e) => {
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        const newZoom = Math.min(Math.max(view.zoom * delta, 0.2), 5);
+        view.x = e.clientX - (e.clientX - view.x) * (newZoom / view.zoom);
+        view.y = e.clientY - (e.clientY - view.y) * (newZoom / view.zoom);
+        view.zoom = newZoom;
+        redrawEverything();
+    });
+
+    function undo() { allPipes.pop(); redrawEverything(); }
+    function clearAll() { if(confirm("Очистить?")) { allPipes = []; redrawEverything(); } }
+
+    function redrawEverything() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.save();
+        ctx.translate(view.x, view.y);
+        ctx.scale(view.zoom, view.zoom);
+
+        allPipes.forEach(p => {
+            ctx.lineCap = "round"; ctx.lineJoin = "round";
+            const drawPath = (w, s) => {
+                ctx.beginPath(); ctx.lineWidth = w; ctx.strokeStyle = s;
+                p.forEach((pt, i) => i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y));
+                ctx.stroke();
+            };
+            drawPath(22, "#0d0d0d");
+            drawPath(18, "#2980b9");
+            drawPath(4, "rgba(255,255,255,0.3)");
+
+            p.forEach(node => {
+                ctx.beginPath(); ctx.arc(node.x, node.y, 11, 0, Math.PI * 2);
+                ctx.fillStyle = "#0d0d0d"; ctx.fill();
+                ctx.beginPath(); ctx.arc(node.x, node.y, 9, 0, Math.PI * 2);
+                ctx.fillStyle = "#3498db"; ctx.fill();
+            });
+        });
+        ctx.restore();
+    }
+</script>
+</body>
+</html>
