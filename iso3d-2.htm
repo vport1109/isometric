@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BIM 3D: Gas Fire Suppression</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: 'Segoe UI', sans-serif; touch-action: none; }
+        
+        /* Панель управления */
+        .controls { 
+            position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); 
+            display: flex; gap: 12px; background: rgba(0,0,0,0.8); padding: 15px; border-radius: 50px; z-index: 100;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        button { 
+            width: 50px; height: 50px; border-radius: 25px; border: none; 
+            background: #555; color: white; font-weight: bold; cursor: pointer; transition: all 0.3s;
+            font-size: 18px; display: flex; align-items: center; justify-content: center;
+        }
+        
+        /* Состояния кнопок */
+        button.active { background: #2196F3; box-shadow: 0 0 20px rgba(33,150,243,0.6); }
+        button:active { transform: scale(0.9); }
+
+        /* Окно ввода длины */
+        #lengthModal {
+            position: fixed; top: 30%; left: 50%; transform: translate(-50%, -50%);
+            background: white; padding: 25px; border-radius: 20px; display: none; text-align: center; 
+            z-index: 1000; box-shadow: 0 20px 50px rgba(0,0,0,0.5); width: 200px;
+        }
+        input { width: 100%; font-size: 28px; padding: 10px; margin: 15px 0; border: 2px solid #ddd; border-radius: 10px; text-align: center; outline: none; }
+        .btn-confirm { background: #4CAF50; color: white; border: none; padding: 15px; border-radius: 12px; width: 100%; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+<div id="lengthModal">
+    <div style="color:#666; font-size: 14px;">ДЛИНА (М)</div>
+    <input type="number" id="lenVal" step="0.1" value="1.0" inputmode="decimal">
+    <button class="btn-confirm" id="confirmLen">OK</button>
+</div>
+
+<div class="controls">
+    <button id="btnZ" onclick="toggleMode('Z')">Z</button>
+    <button id="btnR" onclick="toggleMode('R')">R</button>
+    <button id="btnP" onclick="toggleMode('P')">P</button>
+    <button onclick="undo()" style="background:#444">↩</button>
+    <button onclick="location.reload()" style="background:#b71c1c">✖</button>
+</div>
+
+<script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    let scene, camera, renderer, controls, raycaster;
+    let isDrawing = false, startPoint = null, currentDir = new THREE.Vector3();
+    let previewPipe, pipes = [], nodes = []; 
+    
+    // Состояния модов
+    let mode = { Z: false, R: false, P: false };
+
+    init();
+    animate();
+
+    function init() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111);
+
+        camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.set(10, 10, 10);
+        camera.up.set(0, 0, 1); 
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight(0x606060));
+        const sun = new THREE.DirectionalLight(0xffffff, 1);
+        sun.position.set(5, 5, 20);
+        scene.add(sun);
+        
+        const grid = new THREE.GridHelper(20, 20, 0x333333, 0x222222);
+        grid.rotation.x = Math.PI / 2;
+        scene.add(grid);
+
+        controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.enabled = false; // Выключен по умолчанию для рисования
+
+        raycaster = new THREE.Raycaster();
+
+        // Превью
+        const geo = new THREE.CylinderGeometry(0.05, 0.05, 1, 16);
+        const mat = new THREE.MeshBasicMaterial({ color: 0x2196F3, transparent: true, opacity: 0.5 });
+        previewPipe = new THREE.Mesh(geo, mat);
+        previewPipe.visible = false;
+        scene.add(previewPipe);
+
+        renderer.domElement.addEventListener('pointerdown', onDown);
+        renderer.domElement.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+    }
+
+    window.toggleMode = (m) => {
+        mode[m] = !mode[m];
+        
+        // Взаимоисключение логики Z и R (опционально для удобства)
+        if (m === 'Z' && mode.Z) {
+            camera.position.set(camera.position.x, camera.position.y, 15);
+            camera.lookAt(camera.position.x, camera.position.y, 0);
+            mode.R = false; 
+        }
+
+        updateUI();
+    };
+
+    function updateUI() {
+        document.getElementById('btnZ').className = mode.Z ? 'active' : '';
+        document.getElementById('btnR').className = mode.R ? 'active' : '';
+        document.getElementById('btnP').className = mode.P ? 'active' : '';
+
+        // Настройка OrbitControls
+        controls.enabled = (mode.R || mode.P);
+        controls.enableRotate = mode.R && !mode.Z;
+        controls.enablePan = mode.P;
+        
+        // Если мы в режиме рисования (R и P выключены), отключаем контроллы совсем
+        if (!mode.R && !mode.P) controls.enabled = false;
+    }
+
+    function onDown(e) {
+        if (mode.R || mode.P) return; // Если включен обзор, рисование блокируется
+
+        const m = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(m, camera);
+
+        // Snap (Привязка)
+        let snap = null;
+        nodes.forEach(n => {
+            const proj = n.clone().project(camera);
+            if (Math.hypot(m.x - proj.x, m.y - proj.y) < 0.08) snap = n.clone();
+        });
+
+        if (snap) {
+            startPoint = snap;
+        } else {
+            const h = nodes.length > 0 ? nodes[nodes.length-1].z : 0;
+            const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -h);
+            startPoint = new THREE.Vector3();
+            raycaster.ray.intersectPlane(plane, startPoint);
+        }
+        isDrawing = !!startPoint;
+    }
+
+    function onMove(e) {
+        if (!isDrawing) return;
+
+        const m = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(m, camera);
+
+        const normal = camera.getWorldDirection(new THREE.Vector3()).negate();
+        const plane = new THREE.Plane(normal, -startPoint.dot(normal));
+        const currentPos = new THREE.Vector3();
+        raycaster.ray.intersectPlane(plane, currentPos);
+
+        const diff = new THREE.Vector3().subVectors(currentPos, startPoint);
+        const ax = Math.abs(diff.x), ay = Math.abs(diff.y), az = Math.abs(diff.z);
+        
+        currentDir.set(0,0,0);
+        let length = 0;
+        
+        // Выбор оси
+        if (ax > ay && ax > az) { currentDir.x = Math.sign(diff.x); length = ax; }
+        else if (ay > ax && ay > az) { currentDir.y = Math.sign(diff.y); length = ay; }
+        else { currentDir.z = Math.sign(diff.z); length = az; }
+
+        if (length > 0.1) {
+            previewPipe.visible = true;
+            previewPipe.scale.y = length;
+            previewPipe.position.copy(startPoint.clone().add(currentDir.clone().multiplyScalar(length/2)));
+            previewPipe.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), currentDir);
+        }
+    }
+
+    function onUp() {
+        if (!isDrawing) return;
+        isDrawing = false;
+        if (previewPipe.visible) {
+            document.getElementById('lengthModal').style.display = 'block';
+            const input = document.getElementById('lenVal');
+            input.focus(); 
+            input.select();
+        }
+    }
+
+    document.getElementById('confirmLen').onclick = () => {
+        const L = parseFloat(document.getElementById('lenVal').value) || 1.0;
+        const end = startPoint.clone().add(currentDir.clone().multiplyScalar(L));
+        
+        const pipe = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.06, 0.06, L, 16),
+            new THREE.MeshPhongMaterial({ color: 0x2196F3 })
+        );
+        pipe.position.copy(startPoint.clone().add(end).divideScalar(2));
+        pipe.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), currentDir);
+        
+        scene.add(pipe);
+        pipes.push(pipe);
+        nodes.push(startPoint.clone(), end.clone());
+        
+        previewPipe.visible = false;
+        document.getElementById('lengthModal').style.display = 'none';
+    };
+
+    window.undo = () => {
+        const p = pipes.pop();
+        if(p) { scene.remove(p); nodes.splice(-2); }
+    };
+
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
