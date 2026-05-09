@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>BIM Pipe 3D Pro</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; }
+        #ui { position: absolute; top: 10px; left: 10px; color: white; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 8px; pointer-events: none; }
+        .controls { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; }
+        button { padding: 10px 20px; cursor: pointer; border-radius: 20px; border: none; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <h3>BIM 3D Газовое тушение</h3>
+    <div id="stats">Труб: 0</div>
+</div>
+
+<div class="controls">
+    <button onclick="addPipe('X')">+ X (1м)</button>
+    <button onclick="addPipe('Y')">+ Y (1м)</button>
+    <button onclick="addPipe('Z')">+ Z (1м)</button>
+    <button onclick="resetScene()" style="background: #f44336; color: white;">Сброс</button>
+</div>
+
+<script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    let scene, camera, renderer, controls;
+    let pipes = [];
+    let lastPoint = new THREE.Vector3(0, 0, 0);
+
+    init();
+    animate();
+
+    function init() {
+        // 1. Сцена и Камера
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x222222);
+
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(5, 5, 5);
+
+        // 2. Рендерер
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // 3. Свет и Сетка
+        const light = new THREE.DirectionalLight(0xffffff, 1);
+        light.position.set(5, 10, 7.5);
+        scene.add(light);
+        scene.add(new THREE.AmbientLight(0x404040));
+        
+        const grid = new THREE.GridHelper(10, 10, 0x888888, 0x444444);
+        scene.add(grid);
+
+        // 4. Управление камерой
+        controls = new OrbitControls(camera, renderer.domElement);
+        
+        window.addEventListener('resize', onWindowResize);
+    }
+
+    // Функция создания 3D трубы
+    window.addPipe = function(axis) {
+        const length = 1.0;
+        const radius = 0.05; // DN
+        const start = lastPoint.clone();
+        const end = lastPoint.clone();
+
+        if(axis === 'X') end.x += length;
+        if(axis === 'Y') end.y += length;
+        if(axis === 'Z') end.z += length;
+
+        // Создаем геометрию цилиндра
+        const distance = start.distanceTo(end);
+        const geometry = new THREE.CylinderGeometry(radius, radius, distance, 16);
+        const material = new THREE.MeshPhongMaterial({ color: 0x00BFFF });
+        const pipe = new THREE.Mesh(geometry, material);
+
+        // Позиционируем цилиндр (он создается вертикально в центре)
+        const position = end.clone().add(start).divideScalar(2);
+        pipe.position.copy(position);
+
+        // Направляем цилиндр вдоль линии
+        const direction = new THREE.Vector3().subVectors(end, start);
+        const axisVec = new THREE.Vector3(0, 1, 0);
+        pipe.quaternion.setFromUnitVectors(axisVec, direction.clone().normalize());
+
+        scene.add(pipe);
+        
+        // Создаем "фитинг" в месте соединения
+        const sphereGeo = new THREE.SphereGeometry(radius * 1.2, 16, 16);
+        const sphereMat = new THREE.MeshPhongMaterial({ color: 0x333333 });
+        const joint = new THREE.Mesh(sphereGeo, sphereMat);
+        joint.position.copy(start);
+        scene.add(joint);
+
+        lastPoint.copy(end);
+        pipes.push(pipe);
+        document.getElementById('stats').innerText = `Труб: ${pipes.length}`;
+    };
+
+    window.resetScene = function() {
+        location.reload();
+    };
+
+    function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
