@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BIM 3D Gesture Draw</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: sans-serif; touch-action: none; }
+        canvas { display: block; }
+        .controls { 
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); 
+            display: flex; gap: 10px; background: rgba(255,255,255,0.1); padding: 10px; border-radius: 30px; backdrop-filter: blur(5px);
+        }
+        button { 
+            width: 50px; height: 50px; border-radius: 25px; border: none; 
+            background: #444; color: white; font-weight: bold; cursor: pointer; 
+        }
+        button.active { background: #2196F3; box-shadow: 0 0 15px #2196F3; }
+        #lengthModal {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: white; padding: 20px; border-radius: 15px; display: none; text-align: center; z-index: 1000;
+        }
+        input { width: 100px; font-size: 20px; padding: 5px; margin: 10px; border: 1px solid #ccc; }
+    </style>
+</head>
+<body>
+
+<div id="lengthModal">
+    <label style="color:#333">Длина (м):</label><br>
+    <input type="number" id="lenVal" step="0.1" value="1.0">
+    <br>
+    <button id="confirmLen" style="background: #4CAF50; width: 80px;">OK</button>
+</div>
+
+<div class="controls">
+    <button id="btnZ" onclick="toggleZ()">Z</button>
+    <button id="btnR" onclick="toggleR()" class="active">R</button>
+    <button onclick="undo()" style="background:#f44336">↩</button>
+</div>
+
+<script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    let scene, camera, renderer, controls, raycaster;
+    let isDrawing = false, startPoint = null, currentDir = new THREE.Vector3();
+    let previewPipe, previewGhost;
+    let pipes = [], nodes = []; // Храним точки для привязки
+    let isRotateMode = true;
+
+    init();
+    animate();
+
+    function init() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a1a);
+
+        camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.set(10, 10, 10);
+        camera.up.set(0, 0, 1); // Z - верх
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const light = new THREE.DirectionalLight(0xffffff, 1);
+        light.position.set(5, 5, 10);
+        scene.add(light, new THREE.AmbientLight(0x404040));
+        scene.add(new THREE.GridHelper(20, 20, 0x444444, 0x222222).rotateX(Math.PI/2));
+
+        controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+        controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN }; // По умолчанию Pan
+        
+        updateControlMode();
+
+        raycaster = new THREE.Raycaster();
+
+        // Превью трубы (фантом)
+        const geo = new THREE.CylinderGeometry(0.05, 0.05, 1, 16);
+        const mat = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.5 });
+        previewPipe = new THREE.Mesh(geo, mat);
+        previewPipe.visible = false;
+        scene.add(previewPipe);
+
+        renderer.domElement.addEventListener('pointerdown', onPointerDown);
+        renderer.domElement.addEventListener('pointermove', onPointerMove);
+        renderer.domElement.addEventListener('pointerup', onPointerUp);
+    }
+
+    function toggleZ() {
+        const btn = document.getElementById('btnZ');
+        btn.classList.toggle('active');
+        if(btn.classList.contains('active')) {
+            camera.position.set(0, 0, 15);
+            camera.lookAt(0,0,0);
+            controls.enableRotate = false;
+        } else {
+            controls.enableRotate = isRotateMode;
+        }
+    }
+
+    function toggleR() {
+        isRotateMode = !isRotateMode;
+        document.getElementById('btnR').classList.toggle('active', isRotateMode);
+        updateControlMode();
+    }
+
+    function updateControlMode() {
+        if (isRotateMode) {
+            controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+            controls.enableRotate = true;
+        } else {
+            controls.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN };
+            controls.enableRotate = false;
+        }
+    }
+
+    function onPointerDown(e) {
+        if (isRotateMode) return; // В режиме вращения не рисуем
+
+        const mouse = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(mouse, camera);
+
+        // Привязка к узлам
+        let snapNode = null;
+        nodes.forEach(node => {
+            const dist = raycaster.ray.distanceToPoint(node);
+            if (dist < 0.3) snapNode = node.clone();
+        });
+
+        if (snapNode) {
+            startPoint = snapNode;
+        } else {
+            const planeZ = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+            startPoint = new THREE.Vector3();
+            raycaster.ray.intersectPlane(planeZ, startPoint);
+        }
+        isDrawing = true;
+    }
+
+    function onPointerMove(e) {
+        if (!isDrawing || !startPoint) return;
+
+        const mouse = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(mouse, camera);
+        
+        const currentWorld = new THREE.Vector3();
+        const plane = new THREE.Plane(camera.getWorldDirection(new THREE.Vector3()).negate(), -startPoint.dot(camera.getWorldDirection(new THREE.Vector3()).negate()));
+        raycaster.ray.intersectPlane(plane, currentWorld);
+
+        const diff = new THREE.Vector3().subVectors(currentWorld, startPoint);
+        
+        // Логика выбора оси (X, Y или Z)
+        const absX = Math.abs(diff.x), absY = Math.abs(diff.y), absZ = Math.abs(diff.z);
+        currentDir.set(0,0,0);
+        if (absX > absY && absX > absZ) currentDir.x = Math.sign(diff.x);
+        else if (absY > absX && absY > absZ) currentDir.y = Math.sign(diff.y);
+        else currentDir.z = Math.sign(diff.z);
+
+        updatePreview(startPoint, currentDir, diff.length());
+    }
+
+    function updatePreview(start, dir, length) {
+        previewPipe.visible = true;
+        previewPipe.scale.y = length;
+        const pos = start.clone().add(dir.clone().multiplyScalar(length/2));
+        previewPipe.position.copy(pos);
+        previewPipe.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+    }
+
+    function onPointerUp() {
+        if (!isDrawing) return;
+        isDrawing = false;
+        document.getElementById('lengthModal').style.display = 'block';
+        document.getElementById('lenVal').focus();
+    }
+
+    document.getElementById('confirmLen').onclick = () => {
+        const len = parseFloat(document.getElementById('lenVal').value);
+        createPipe(startPoint, currentDir, len);
+        document.getElementById('lengthModal').style.display = 'none';
+        previewPipe.visible = false;
+    };
+
+    function createPipe(start, dir, len) {
+        const end = start.clone().add(dir.clone().multiplyScalar(len));
+        
+        const geometry = new THREE.CylinderGeometry(0.06, 0.06, len, 16);
+        const material = new THREE.MeshPhongMaterial({ color: 0x2196F3 });
+        const pipe = new THREE.Mesh(geometry, material);
+        
+        pipe.position.copy(start.clone().add(end).divideScalar(2));
+        pipe.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+        
+        scene.add(pipe);
+        pipes.push(pipe);
+        nodes.push(start.clone(), end.clone()); // Добавляем точки для будущего Snap
+    }
+
+    function undo() {
+        const p = pipes.pop();
+        if(p) scene.remove(p);
+        nodes.splice(-2);
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
