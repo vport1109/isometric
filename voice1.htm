@@ -1,1 +1,182 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Голосовое управление черчением</title>
+    <style>
+        body { 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background: #2c3e50; 
+            color: white;
+            margin: 0;
+            padding: 20px;
+        }
+        h2 { margin-bottom: 10px; }
+        canvas { 
+            border: 3px solid #ecf0f1; 
+            background: #ffffff; 
+            box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+            margin-top: 20px; 
+            max-width: 95%;
+            touch-action: none;
+        }
+        .controls { 
+            background: #34495e;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            width: 100%;
+            max-width: 500px;
+        }
+        button {
+            background: #e74c3c;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 1.1em;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:disabled { background: #95a5a6; cursor: not-allowed; }
+        button:hover:not(:disabled) { background: #c0392b; }
+        #status { font-weight: bold; }
+        .log-box {
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #bdc3c7;
+        }
+        .hint { font-size: 0.85em; color: #f1c40f; margin-top: 10px; }
+    </style>
+</head>
+<body>
 
+    <h2>Голосовой чертежник</h2>
+    
+    <div class="controls">
+        <button id="startBtn">Включить микрофон</button>
+        <p>Статус: <span id="status">Ожидание</span></p>
+        <div class="log-box">Команда: <span id="command" style="color: #2ecc71;">-</span></div>
+        <p class="hint">Говорите четко: "Вправо 100", "Вверх 50", "Влево 30"</p>
+    </div>
+
+    <canvas id="canvas" width="800" height="600"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const startBtn = document.getElementById('startBtn');
+        const statusDisp = document.getElementById('status');
+        const commandDisp = document.getElementById('command');
+
+        // Начальная точка
+        let curX = canvas.width / 2;
+        let curY = canvas.height / 2;
+
+        // Стиль линии
+        ctx.strokeStyle = '#2980b9';
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        
+        if (!SpeechRecognition) {
+            alert("Ваш браузер не поддерживает Web Speech API. Используйте Chrome или Edge.");
+        } else {
+            const recognition = new SpeechRecognition();
+            recognition.lang = 'ru-RU';
+            recognition.continuous = false; // Важно для мобильных: обрабатываем фразы по одной
+            recognition.interimResults = false;
+
+            let active = false;
+
+            startBtn.addEventListener('click', () => {
+                active = true;
+                recognition.start();
+            });
+
+            recognition.onstart = () => {
+                statusDisp.textContent = "Слушаю...";
+                statusDisp.style.color = "#2ecc71";
+                startBtn.disabled = true;
+            };
+
+            recognition.onresult = (event) => {
+                const result = event.results[0][0].transcript.toLowerCase();
+                commandDisp.textContent = result;
+                processCommand(result);
+            };
+
+            // Перезапуск микрофона сразу после обработки фразы
+            recognition.onend = () => {
+                if (active) {
+                    recognition.start();
+                }
+            };
+
+            recognition.onerror = (event) => {
+                // Если ошибка "no-speech" (молчание), просто игнорируем и перезапускаем через onend
+                if (event.error !== 'no-speech') {
+                    console.error("Speech Error:", event.error);
+                    statusDisp.textContent = "Ошибка: " + event.error;
+                    statusDisp.style.color = "#e74c3c";
+                    active = false;
+                    startBtn.disabled = false;
+                }
+            };
+        }
+
+        function processCommand(text) {
+            // Расширенный словарь направлений
+            const directions = {
+                'вправо':   { dx: 1,  dy: 0 },
+                'направо':  { dx: 1,  dy: 0 },
+                'влево':    { dx: -1, dy: 0 },
+                'налево':   { dx: -1, dy: 0 },
+                'вверх':    { dx: 0,  dy: -1 },
+                'кверху':   { dx: 0,  dy: -1 },
+                'вниз':     { dx: 0,  dy: 1 },
+                'книзу':    { dx: 0,  dy: 1 }
+            };
+
+            // Ищем любое число в строке
+            const numberMatch = text.match(/\d+/);
+            const distance = numberMatch ? parseInt(numberMatch[0]) : 0;
+
+            if (distance === 0) return;
+
+            // Ищем совпадение направления
+            for (let key in directions) {
+                if (text.includes(key)) {
+                    drawLine(directions[key].dx * distance, directions[key].dy * distance);
+                    break;
+                }
+            }
+        }
+
+        function drawLine(dx, dy) {
+            ctx.beginPath();
+            ctx.moveTo(curX, curY);
+            
+            curX += dx;
+            curY += dy;
+            
+            // Защита от выхода за границы холста
+            curX = Math.max(5, Math.min(canvas.width - 5, curX));
+            curY = Math.max(5, Math.min(canvas.height - 5, curY));
+            
+            ctx.lineTo(curX, curY);
+            ctx.stroke();
+            
+            // Рисуем маленькую точку в конце, чтобы видеть курсор
+            ctx.fillStyle = '#e74c3c';
+            ctx.fillRect(curX-2, curY-2, 4, 4);
+        }
+    </script>
+</body>
+</html>
