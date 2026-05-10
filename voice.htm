@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Голосовое рисование</title>
+    <style>
+        body { display: flex; flex-direction: column; align-items: center; font-family: sans-serif; background: #f0f0f0; }
+        canvas { border: 2px solid #333; background: #fff; margin-top: 20px; cursor: crosshair; }
+        .controls { margin-top: 10px; text-align: center; }
+        #status { color: blue; font-weight: bold; }
+        .hint { font-size: 0.9em; color: #666; }
+    </style>
+</head>
+<body>
+
+    <h2>Голосовое рисование</h2>
+    <p class="hint">Скажите, например: <b>"Вправо сто"</b> или <b>"Вниз пятьдесят"</b></p>
+    
+    <div class="controls">
+        <button id="startBtn">Включить микрофон</button>
+        <p>Статус: <span id="status">Ожидание</span></p>
+        <p>Команда: <span id="command">-</span></p>
+    </div>
+
+    <canvas id="canvas" width="600" height="400"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const startBtn = document.getElementById('startBtn');
+        const statusDisp = document.getElementById('status');
+        const commandDisp = document.getElementById('command');
+
+        // Начальная точка в центре
+        let curX = canvas.width / 2;
+        let curY = canvas.height / 2;
+
+        // Настройка рисования
+        ctx.strokeStyle = 'red';
+        ctx.lineWidth = 3;
+        ctx.lineCap = 'round';
+
+        // Проверка поддержки API
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        
+        if (!SpeechRecognition) {
+            alert("Ваш браузер не поддерживает Web Speech API. Попробуйте Chrome.");
+        } else {
+            const recognition = new SpeechRecognition();
+            recognition.lang = 'ru-RU';
+            recognition.continuous = true; // Слушать постоянно
+            recognition.interimResults = false;
+
+            startBtn.addEventListener('click', () => {
+                recognition.start();
+                statusDisp.textContent = "Слушаю...";
+                statusDisp.style.color = "green";
+            });
+
+            recognition.onresult = (event) => {
+                const result = event.results[event.results.length - 1][0].transcript.toLowerCase();
+                commandDisp.textContent = result;
+                processCommand(result);
+            };
+
+            recognition.onerror = (event) => {
+                statusDisp.textContent = "Ошибка: " + event.error;
+                statusDisp.style.color = "red";
+            };
+        }
+
+        function processCommand(text) {
+            const directions = {
+                'вправо': { dx: 1, dy: 0 },
+                'влево':  { dx: -1, dy: 0 },
+                'вверх':  { dx: 0, dy: -1 },
+                'вниз':   { dx: 0, dy: 1 }
+            };
+
+            // Ищем число в строке
+            const numberMatch = text.match(/\d+/);
+            const distance = numberMatch ? parseInt(numberMatch[0]) : 0;
+
+            if (distance === 0) return;
+
+            // Ищем направление
+            for (let dir in directions) {
+                if (text.includes(dir)) {
+                    drawLine(directions[dir].dx * distance, directions[dir].dy * distance);
+                    break;
+                }
+            }
+        }
+
+        function drawLine(dx, dy) {
+            ctx.beginPath();
+            ctx.moveTo(curX, curY);
+            curX += dx;
+            curY += dy;
+            
+            // Ограничиваем, чтобы не уходило за края
+            curX = Math.max(0, Math.min(canvas.width, curX));
+            curY = Math.max(0, Math.min(canvas.height, curY));
+            
+            ctx.lineTo(curX, curY);
+            ctx.stroke();
+        }
+    </script>
+</body>
+</html>
