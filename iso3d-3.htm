@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BIM 3D: Pipe Diameters</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: sans-serif; touch-action: none; }
+        
+        .ui-top { position: fixed; top: 10px; left: 10px; z-index: 100; display: flex; flex-direction: column; gap: 5px; }
+        .dn-btn { width: 45px; height: 35px; border: none; border-radius: 5px; color: white; font-weight: bold; cursor: pointer; font-size: 11px; }
+
+        .controls { 
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); 
+            display: flex; gap: 10px; background: rgba(0,0,0,0.8); padding: 12px; border-radius: 40px; z-index: 100;
+        }
+        
+        button.tool { width: 45px; height: 45px; border-radius: 50%; border: none; background: #444; color: white; font-weight: bold; cursor: pointer; }
+        button.active { background: #2196F3; box-shadow: 0 0 15px #2196F3; }
+
+        #lengthModal {
+            position: fixed; top: 30%; left: 50%; transform: translate(-50%, -50%);
+            background: white; padding: 20px; border-radius: 15px; display: none; text-align: center; z-index: 1000;
+        }
+        input { width: 80px; font-size: 24px; padding: 5px; text-align: center; margin: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="ui-top" id="dnPanel" style="display: none;">
+    <button class="dn-btn" onclick="setDN('DN15', 0.04, '#00BFFF')" style="background:#00BFFF">15</button>
+    <button class="dn-btn" onclick="setDN('DN25', 0.07, '#F44336')" style="background:#F44336">25</button>
+    <button class="dn-btn" onclick="setDN('DN40', 0.10, '#FFEB3B; color:black')">40</button>
+    <button class="dn-btn" onclick="setDN('DN50', 0.13, '#2196F3')" style="background:#2196F3">50</button>
+    <button class="dn-btn" onclick="setDN('DN80', 0.20, '#9C27B0')" style="background:#9C27B0">80</button>
+</div>
+
+<div id="lengthModal">
+    <input type="number" id="lenVal" value="1.0" step="0.1" inputmode="decimal">
+    <button onclick="confirmPipe()" style="padding:10px 20px; background:#4CAF50; color:white; border:none; border-radius:5px;">OK</button>
+</div>
+
+<div class="controls">
+    <button id="btnZ" class="tool" onclick="toggleMode('Z')">Z</button>
+    <button id="btnR" class="tool" onclick="toggleMode('R')">R</button>
+    <button id="btnP" class="tool" onclick="toggleMode('P')">P</button>
+    <button id="btnD" class="tool" onclick="toggleMode('D')">Ø</button>
+    <button class="tool" onclick="undo()" style="background:#555">↩</button>
+</div>
+
+<script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    let scene, camera, renderer, controls, raycaster;
+    let isDrawing = false, startPoint = null, currentDir = new THREE.Vector3();
+    let previewPipe, pipes = [], nodes = [];
+    
+    let currentDN = { label: 'DN25', radius: 0.07, color: 0xF44336 };
+    let activeTool = 'draw'; // draw, diameter, view
+
+    init();
+    animate();
+
+    function init() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111);
+        camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.set(10, 10, 10);
+        camera.up.set(0, 0, 1);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight(0x808080));
+        const light = new THREE.DirectionalLight(0xffffff, 1);
+        light.position.set(10, 10, 20);
+        scene.add(light);
+        
+        const grid = new THREE.GridHelper(20, 20, 0x333333, 0x222222);
+        grid.rotation.x = Math.PI / 2;
+        scene.add(grid);
+
+        controls = new OrbitControls(camera, renderer.domElement);
+        controls.enabled = false;
+        raycaster = new THREE.Raycaster();
+
+        // Превью фантом
+        previewPipe = new THREE.Mesh(
+            new THREE.CylinderGeometry(1, 1, 1, 16),
+            new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.4 })
+        );
+        previewPipe.visible = false;
+        scene.add(previewPipe);
+
+        renderer.domElement.addEventListener('pointerdown', handleDown);
+        renderer.domElement.addEventListener('pointermove', handleMove);
+        window.addEventListener('pointerup', handleUp);
+    }
+
+    // --- УПРАВЛЕНИЕ РЕЖИМАМИ ---
+    window.toggleMode = (m) => {
+        // Сброс всех
+        if(m === 'D') {
+            activeTool = (activeTool === 'diameter') ? 'draw' : 'diameter';
+        } else if(m === 'R' || m === 'P') {
+            activeTool = 'view';
+            if(m === 'R') controls.enableRotate = true, controls.enablePan = false;
+            if(m === 'P') controls.enablePan = true, controls.enableRotate = false;
+        } else if(m === 'Z') {
+            camera.position.set(camera.position.x, camera.position.y, 15);
+            camera.lookAt(camera.position.x, camera.position.y, 0);
+            return;
+        }
+        updateUI();
+    };
+
+    function updateUI() {
+        document.getElementById('btnD').classList.toggle('active', activeTool === 'diameter');
+        document.getElementById('btnR').classList.toggle('active', activeTool === 'view' && controls.enableRotate);
+        document.getElementById('btnP').classList.toggle('active', activeTool === 'view' && controls.enablePan);
+        document.getElementById('dnPanel').style.display = (activeTool === 'diameter') ? 'flex' : 'none';
+        controls.enabled = (activeTool === 'view');
+    }
+
+    window.setDN = (label, rad, col) => {
+        currentDN = { label, radius: rad, color: col };
+        // Подсвечиваем выбранную кнопку можно добавить тут
+    };
+
+    // --- ЛОГИКА РИСОВАНИЯ И ВЫБОРА ---
+    function handleDown(e) {
+        const m = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(m, camera);
+
+        if (activeTool === 'diameter') {
+            const intersects = raycaster.intersectObjects(pipes);
+            if (intersects.length > 0) {
+                const pipe = intersects[0].object;
+                updatePipeGeometry(pipe, currentDN);
+            }
+            return;
+        }
+
+        if (activeTool === 'view') return;
+
+        // Логика рисования (Snap)
+        let snap = null;
+        nodes.forEach(n => {
+            const proj = n.clone().project(camera);
+            if (Math.hypot(m.x - proj.x, m.y - proj.y) < 0.08) snap = n.clone();
+        });
+
+        const h = snap ? snap.z : (nodes.length > 0 ? nodes[nodes.length-1].z : 0);
+        const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -h);
+        startPoint = snap || new THREE.Vector3();
+        if(!snap) raycaster.ray.intersectPlane(plane, startPoint);
+        
+        isDrawing = true;
+    }
+
+    function handleMove(e) {
+        if (!isDrawing || activeTool !== 'draw') return;
+        const m = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(m, camera);
+
+        const normal = camera.getWorldDirection(new THREE.Vector3()).negate();
+        const plane = new THREE.Plane(normal, -startPoint.dot(normal));
+        const currentPos = new THREE.Vector3();
+        raycaster.ray.intersectPlane(plane, currentPos);
+
+        const diff = new THREE.Vector3().subVectors(currentPos, startPoint);
+        const ax = Math.abs(diff.x), ay = Math.abs(diff.y), az = Math.abs(diff.z);
+        
+        currentDir.set(0,0,0);
+        let L = 0;
+        if (ax > ay && ax > az) { currentDir.x = Math.sign(diff.x); L = ax; }
+        else if (ay > ax && ay > az) { currentDir.y = Math.sign(diff.y); L = ay; }
+        else { currentDir.z = Math.sign(diff.z); L = az; }
+
+        if (L > 0.1) {
+            previewPipe.visible = true;
+            previewPipe.scale.set(currentDN.radius, L, currentDN.radius);
+            previewPipe.position.copy(startPoint.clone().add(currentDir.clone().multiplyScalar(L/2)));
+            previewPipe.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), currentDir);
+        }
+    }
+
+    function handleUp() {
+        if (isDrawing && previewPipe.visible) {
+            document.getElementById('lengthModal').style.display = 'block';
+            document.getElementById('lenVal').select();
+        }
+        isDrawing = false;
+    }
+
+    window.confirmPipe = () => {
+        const L = parseFloat(document.getElementById('lenVal').value) || 1.0;
+        const end = startPoint.clone().add(currentDir.clone().multiplyScalar(L));
+        
+        const pipe = new THREE.Mesh(
+            new THREE.CylinderGeometry(currentDN.radius, currentDN.radius, L, 16),
+            new THREE.MeshPhongMaterial({ color: currentDN.color })
+        );
+        pipe.position.copy(startPoint.clone().add(end).divideScalar(2));
+        pipe.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), currentDir);
+        
+        // Сохраняем метаданные
+        pipe.userData = { dn: currentDN.label, radius: currentDN.radius, length: L, dir: currentDir.clone() };
+        
+        scene.add(pipe);
+        pipes.push(pipe);
+        nodes.push(end.clone());
+        
+        previewPipe.visible = false;
+        document.getElementById('lengthModal').style.display = 'none';
+    };
+
+    function updatePipeGeometry(pipe, dnData) {
+        // В Three.js нельзя просто сменить радиус, нужно пересоздать геометрию
+        pipe.geometry.dispose();
+        pipe.geometry = new THREE.CylinderGeometry(dnData.radius, dnData.radius, pipe.userData.length, 16);
+        pipe.material.color.set(dnData.color);
+        pipe.userData.dn = dnData.label;
+        pipe.userData.radius = dnData.radius;
+    }
+
+    window.undo = () => {
+        const p = pipes.pop();
+        if(p) { scene.remove(p); nodes.pop(); }
+    };
+
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
