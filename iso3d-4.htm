@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BIM 3D: Fire Gas System</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; touch-action: none; }
+        
+        /* Панель диаметров */
+        .dn-container { 
+            position: fixed; top: 15px; left: 15px; z-index: 100; 
+            display: none; flex-direction: column; gap: 8px; 
+        }
+        .dn-btn { 
+            width: 50px; height: 40px; border: 2px solid rgba(255,255,255,0.2); 
+            border-radius: 8px; color: white; font-weight: bold; cursor: pointer; font-size: 12px;
+        }
+
+        /* Главные инструменты */
+        .controls { 
+            position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); 
+            display: flex; gap: 15px; background: rgba(0,0,0,0.85); padding: 12px 20px; 
+            border-radius: 40px; z-index: 100; border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        button.tool { 
+            width: 55px; height: 55px; border-radius: 50%; border: none; 
+            background: #444; color: white; font-weight: bold; cursor: pointer; font-size: 18px;
+        }
+        button.active { background: #2196F3; box-shadow: 0 0 15px #2196F3; }
+
+        /* Ввод длины */
+        #lengthModal {
+            position: fixed; top: 30%; left: 50%; transform: translate(-50%, -50%);
+            background: white; padding: 25px; border-radius: 20px; display: none; 
+            text-align: center; z-index: 1000; box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+        }
+        input { width: 100px; font-size: 28px; padding: 8px; text-align: center; border: 2px solid #2196F3; border-radius: 10px; margin-bottom: 15px; outline: none; }
+    </style>
+</head>
+<body>
+
+<div class="dn-container" id="dnPanel">
+    <button class="dn-btn" onclick="setDN('DN20', 0.05, '#FFEB3B', 'black')" style="background:#FFEB3B; color:black">20</button>
+    <button class="dn-btn" onclick="setDN('DN25', 0.07, '#F44336', 'white')" style="background:#F44336; color:white">25</button>
+    <button class="dn-btn" onclick="setDN('DN32', 0.09, '#4CAF50', 'white')" style="background:#4CAF50; color:white">32</button>
+    <button class="dn-btn" onclick="setDN('DN40', 0.11, '#FF9800', 'white')" style="background:#FF9800; color:white">40</button>
+</div>
+
+<div id="lengthModal">
+    <div style="margin-bottom:10px; color:#666">ДЛИНА УЧАСТКА (М)</div>
+    <input type="number" id="lenVal" value="1.0" step="0.1" inputmode="decimal">
+    <br>
+    <button onclick="confirmPipe()" style="width:100%; padding:15px; background:#4CAF50; color:white; border:none; border-radius:10px; font-weight:bold;">OK</button>
+</div>
+
+<div class="controls">
+    <button id="btnZ" class="tool" onclick="toggleZ()">Z</button>
+    <button id="btnR" class="tool" onclick="toggleR()">R</button>
+    <button id="btnD" class="tool" onclick="toggleD()">Ø</button>
+    <button class="tool" onclick="undo()" style="background:#555">↩</button>
+    <button class="tool" onclick="location.reload()" style="background:#b71c1c">✖</button>
+</div>
+
+<script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    let scene, camera, renderer, controls, raycaster;
+    let isDrawing = false, startPoint = null, currentDir = new THREE.Vector3();
+    let previewPipe, pipes = [], nodes = [];
+    
+    let currentDN = { label: 'DN25', radius: 0.07, color: '#F44336' };
+    let mode = 'draw'; // draw, view, diameter
+
+    init();
+    animate();
+
+    function init() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111);
+        camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.set(10, 10, 10);
+        camera.up.set(0, 0, 1);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight(0x909090));
+        const light = new THREE.DirectionalLight(0xffffff, 1);
+        light.position.set(10, 10, 20);
+        scene.add(light);
+        
+        const grid = new THREE.GridHelper(20, 20, 0x333333, 0x222222);
+        grid.rotation.x = Math.PI / 2;
+        scene.add(grid);
+
+        controls = new OrbitControls(camera, renderer.domElement);
+        controls.enabled = false;
+        raycaster = new THREE.Raycaster();
+
+        previewPipe = new THREE.Mesh(
+            new THREE.CylinderGeometry(1, 1, 1, 16),
+            new THREE.MeshBasicMaterial({ color: 0x2196F3, transparent: true, opacity: 0.4 })
+        );
+        previewPipe.visible = false;
+        scene.add(previewPipe);
+
+        renderer.domElement.addEventListener('pointerdown', onDown);
+        renderer.domElement.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+    }
+
+    // --- ЛОГИКА КНОПОК ---
+
+    window.toggleR = () => {
+        if (mode === 'view') {
+            mode = 'draw';
+        } else {
+            mode = 'view';
+        }
+        updateUI();
+    };
+
+    window.toggleD = () => {
+        if (mode === 'diameter') {
+            mode = 'draw';
+        } else {
+            mode = 'diameter';
+            // Если включаем диаметр, отключаем вращение для удобства тыка
+        }
+        updateUI();
+    };
+
+    window.toggleZ = () => {
+        camera.position.set(camera.position.x, camera.position.y, 15);
+        camera.lookAt(camera.position.x, camera.position.y, 0);
+        mode = 'draw'; // Сбрасываем в рисование
+        updateUI();
+    };
+
+    function updateUI() {
+        document.getElementById('btnR').className = (mode === 'view') ? 'tool active' : 'tool';
+        document.getElementById('btnD').className = (mode === 'diameter') ? 'tool active' : 'tool';
+        document.getElementById('dnPanel').style.display = (mode === 'diameter') ? 'flex' : 'none';
+        
+        controls.enabled = (mode === 'view');
+    }
+
+    window.setDN = (label, rad, col) => {
+        currentDN = { label, radius: rad, color: col };
+    };
+
+    // --- РАБОТА В СЦЕНЕ ---
+
+    function onDown(e) {
+        if (mode === 'view') return;
+
+        const m = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(m, camera);
+
+        if (mode === 'diameter') {
+            const hits = raycaster.intersectObjects(pipes);
+            if (hits.length > 0) {
+                const p = hits[0].object;
+                p.geometry.dispose();
+                p.geometry = new THREE.CylinderGeometry(currentDN.radius, currentDN.radius, p.userData.L, 16);
+                p.material.color.set(currentDN.color);
+                p.userData.dn = currentDN.label;
+            }
+            return;
+        }
+
+        // Snap logic
+        let snap = null;
+        nodes.forEach(n => {
+            const proj = n.clone().project(camera);
+            if (Math.hypot(m.x - proj.x, m.y - proj.y) < 0.07) snap = n.clone();
+        });
+
+        const h = snap ? snap.z : (nodes.length > 0 ? nodes[nodes.length-1].z : 0);
+        const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -h);
+        startPoint = snap || new THREE.Vector3();
+        if(!snap) raycaster.ray.intersectPlane(plane, startPoint);
+        
+        isDrawing = true;
+    }
+
+    function onMove(e) {
+        if (!isDrawing || mode !== 'draw') return;
+        const m = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(m, camera);
+
+        const norm = camera.getWorldDirection(new THREE.Vector3()).negate();
+        const plane = new THREE.Plane(norm, -startPoint.dot(norm));
+        const cur = new THREE.Vector3();
+        raycaster.ray.intersectPlane(plane, cur);
+
+        const diff = new THREE.Vector3().subVectors(cur, startPoint);
+        const ax = Math.abs(diff.x), ay = Math.abs(diff.y), az = Math.abs(diff.z);
+        
+        currentDir.set(0,0,0);
+        let dist = 0;
+        if (ax > ay && ax > az) { currentDir.x = Math.sign(diff.x); dist = ax; }
+        else if (ay > ax && ay > az) { currentDir.y = Math.sign(diff.y); dist = ay; }
+        else { currentDir.z = Math.sign(diff.z); dist = az; }
+
+        if (dist > 0.1) {
+            previewPipe.visible = true;
+            previewPipe.scale.set(currentDN.radius, dist, currentDN.radius);
+            previewPipe.position.copy(startPoint.clone().add(currentDir.clone().multiplyScalar(dist/2)));
+            previewPipe.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), currentDir);
+        }
+    }
+
+    function onUp() {
+        if (isDrawing && previewPipe.visible) {
+            document.getElementById('lengthModal').style.display = 'block';
+            document.getElementById('lenVal').select();
+        }
+        isDrawing = false;
+    }
+
+    window.confirmPipe = () => {
+        const L = parseFloat(document.getElementById('lenVal').value) || 1.0;
+        const end = startPoint.clone().add(currentDir.clone().multiplyScalar(L));
+        
+        const pipe = new THREE.Mesh(
+            new THREE.CylinderGeometry(currentDN.radius, currentDN.radius, L, 16),
+            new THREE.MeshPhongMaterial({ color: currentDN.color })
+        );
+        pipe.position.copy(startPoint.clone().add(end).divideScalar(2));
+        pipe.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), currentDir);
+        pipe.userData = { L: L, dn: currentDN.label };
+        
+        scene.add(pipe);
+        pipes.push(pipe);
+        nodes.push(end.clone());
+        
+        previewPipe.visible = false;
+        document.getElementById('lengthModal').style.display = 'none';
+    };
+
+    window.undo = () => {
+        const p = pipes.pop();
+        if(p) { scene.remove(p); nodes.pop(); }
+    };
+
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
