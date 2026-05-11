@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BIM Pipe Expert</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; touch-action: none; }
+        .dn-container { position: fixed; top: 15px; left: 15px; z-index: 100; display: none; flex-direction: column; gap: 6px; }
+        .dn-btn { width: 55px; height: 42px; border: 2px solid rgba(255,255,255,0.2); border-radius: 8px; color: white; font-weight: bold; cursor: pointer; font-size: 13px; }
+        .controls { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; background: rgba(0,0,0,0.9); padding: 12px 20px; border-radius: 40px; z-index: 100; border: 1px solid rgba(255,255,255,0.1); }
+        button.tool { width: 52px; height: 52px; border-radius: 50%; border: none; background: #333; color: white; font-weight: bold; cursor: pointer; font-size: 18px; }
+        button.active { background: #2196F3; box-shadow: 0 0 15px #2196F3; }
+        #lengthModal { position: fixed; top: 30%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 25px; border-radius: 20px; display: none; text-align: center; z-index: 1000; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+        input { width: 120px; font-size: 32px; padding: 10px; text-align: center; border: 2px solid #2196F3; border-radius: 12px; margin-bottom: 15px; outline: none; }
+    </style>
+</head>
+<body>
+
+<div class="dn-container" id="dnPanel">
+    <button class="dn-btn" onclick="setDN('DN15', 21.3, '#00BFFF')" style="background:#00BFFF">15</button>
+    <button class="dn-btn" onclick="setDN('DN20', 26.9, '#FFEB3B; color:black')">20</button>
+    <button class="dn-btn" onclick="setDN('DN25', 33.7, '#F44336')" style="background:#F44336">25</button>
+    <button class="dn-btn" onclick="setDN('DN32', 42.4, '#4CAF50')" style="background:#4CAF50">32</button>
+    <button class="dn-btn" onclick="setDN('DN40', 48.3, '#FF9800')" style="background:#FF9800">40</button>
+    <button class="dn-btn" onclick="setDN('DN50', 60.3, '#9C27B0')" style="background:#9C27B0">50</button>
+    <button class="dn-btn" onclick="setDN('DN65', 76.1, '#0D47A1')" style="background:#0D47A1">65</button>
+</div>
+
+<div id="lengthModal">
+    <input type="number" id="lenVal" value="1.0" step="0.1" inputmode="decimal">
+    <button onclick="confirmPipe()" style="width:100%; padding:15px; background:#4CAF50; color:white; border:none; border-radius:12px; font-weight:bold;">OK</button>
+</div>
+
+<div class="controls">
+    <button id="btnZ" class="tool" onclick="toggleZ()">Z</button>
+    <button id="btnR" class="tool" onclick="toggleR()">R</button>
+    <button id="btnD" class="tool" onclick="toggleD()">Ø</button>
+    <button id="btnF" class="tool" onclick="generateFittings()">F</button>
+    <button class="tool" onclick="undo()" style="background:#444">↩</button>
+    <button class="tool" onclick="location.reload()" style="background:#b71c1c">✖</button>
+</div>
+
+<script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    let scene, camera, renderer, controls, raycaster;
+    let isDrawing = false, startPoint = null, currentDir = new THREE.Vector3();
+    let previewPipe, pipes = [], nodes = [], fittings = [];
+    
+    const VISUAL_SCALE = 6; 
+    let currentDN = { label: 'DN25', radius: (33.7/2000) * VISUAL_SCALE, color: '#F44336' };
+    let mode = 'draw'; 
+
+    init();
+    animate();
+
+    function init() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111);
+        camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.set(8, 8, 8);
+        camera.up.set(0, 0, 1);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+        const sun = new THREE.DirectionalLight(0xffffff, 1);
+        sun.position.set(5, 5, 10);
+        scene.add(sun);
+        
+        const grid = new THREE.GridHelper(20, 20, 0x444444, 0x222222);
+        grid.rotation.x = Math.PI / 2;
+        scene.add(grid);
+
+        controls = new OrbitControls(camera, renderer.domElement);
+        controls.enabled = false;
+        raycaster = new THREE.Raycaster();
+
+        previewPipe = new THREE.Mesh(
+            new THREE.CylinderGeometry(1, 1, 1, 16),
+            new THREE.MeshBasicMaterial({ color: 0x2196F3, transparent: true, opacity: 0.5 })
+        );
+        previewPipe.visible = false;
+        scene.add(previewPipe);
+
+        renderer.domElement.addEventListener('pointerdown', onDown);
+        renderer.domElement.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+    }
+
+    // --- UI LOGIC ---
+    window.toggleR = () => { mode = (mode === 'view') ? 'draw' : 'view'; updateUI(); };
+    window.toggleD = () => { mode = (mode === 'diameter') ? 'draw' : 'diameter'; updateUI(); };
+    window.toggleZ = () => { camera.position.set(camera.position.x, camera.position.y, 12); camera.lookAt(camera.position.x, camera.position.y, 0); mode = 'draw'; updateUI(); };
+    
+    function updateUI() {
+        document.getElementById('btnR').className = (mode === 'view') ? 'tool active' : 'tool';
+        document.getElementById('btnD').className = (mode === 'diameter') ? 'tool active' : 'tool';
+        document.getElementById('dnPanel').style.display = (mode === 'diameter') ? 'flex' : 'none';
+        controls.enabled = (mode === 'view');
+    }
+
+    window.setDN = (label, outerDiam, col) => {
+        currentDN = { label, radius: (outerDiam / 2000) * VISUAL_SCALE, color: col };
+    };
+
+    // --- FITTINGS ALGORITHM ---
+    window.generateFittings = () => {
+        fittings.forEach(f => scene.remove(f));
+        fittings = [];
+
+        const nodeMap = new Map();
+        pipes.forEach(pipe => {
+            const dir = new THREE.Vector3(0, 1, 0).applyQuaternion(pipe.quaternion);
+            const p1 = pipe.position.clone().add(dir.clone().multiplyScalar(pipe.userData.L/2));
+            const p2 = pipe.position.clone().add(dir.clone().multiplyScalar(-pipe.userData.L/2));
+            [p1, p2].forEach(p => {
+                const key = `${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)}`;
+                if (!nodeMap.has(key)) nodeMap.set(key, []);
+                nodeMap.get(key).push(pipe);
+            });
+        });
+
+        nodeMap.forEach((connected, key) => {
+            if (connected.length < 2) return;
+            const pos = new THREE.Vector3(...key.split(',').map(Number));
+            const maxR = Math.max(...connected.map(p => p.userData.r));
+            
+            let fittingMesh;
+            const fitMat = new THREE.MeshPhongMaterial({ color: 0x888888 });
+
+            if (connected.length === 2) {
+                const angle = new THREE.Vector3(0,1,0).applyQuaternion(connected[0].quaternion)
+                              .angleTo(new THREE.Vector3(0,1,0).applyQuaternion(connected[1].quaternion));
+                
+                if (angle > 0.1 && angle < Math.PI - 0.1) {
+                    // ELBOW
+                    fittingMesh = new THREE.Mesh(new THREE.SphereGeometry(maxR * 1.2, 16, 12), fitMat);
+                }
+            } else {
+                // TEE
+                fittingMesh = new THREE.Mesh(new THREE.BoxGeometry(maxR*2.2, maxR*2.2, maxR*2.2), fitMat);
+            }
+
+            if (fittingMesh) {
+                fittingMesh.position.copy(pos);
+                scene.add(fittingMesh);
+                fittings.push(fittingMesh);
+
+                // REDUCERS LOGIC
+                connected.forEach(p => {
+                    if (p.userData.r < maxR - 0.001) {
+                        const dirToPipe = p.position.clone().sub(pos).normalize();
+                        const reducer = new THREE.Mesh(
+                            new THREE.CylinderGeometry(p.userData.r, maxR, maxR * 2, 16),
+                            fitMat
+                        );
+                        reducer.position.copy(pos.clone().add(dirToPipe.multiplyScalar(maxR)));
+                        reducer.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dirToPipe);
+                        scene.add(reducer);
+                        fittings.push(reducer);
+                    }
+                });
+            }
+        });
+    };
+
+    // --- DRAWING LOGIC ---
+    function onDown(e) {
+        if (mode === 'view') return;
+        const m = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(m, camera);
+
+        if (mode === 'diameter') {
+            const hits = raycaster.intersectObjects(pipes);
+            if (hits.length > 0) {
+                const p = hits[0].object;
+                p.geometry.dispose();
+                p.geometry = new THREE.CylinderGeometry(currentDN.radius, currentDN.radius, p.userData.L, 16);
+                p.material.color.set(currentDN.color);
+                p.userData.dn = currentDN.label; p.userData.r = currentDN.radius;
+            }
+            return;
+        }
+
+        let snap = null;
+        nodes.forEach(n => {
+            const proj = n.clone().project(camera);
+            if (Math.hypot(m.x - proj.x, m.y - proj.y) < 0.06) snap = n.clone();
+        });
+
+        const h = snap ? snap.z : (nodes.length > 0 ? nodes[nodes.length-1].z : 0);
+        startPoint = snap || new THREE.Vector3();
+        if(!snap) raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,0,1), -h), startPoint);
+        isDrawing = true;
+    }
+
+    function onMove(e) {
+        if (!isDrawing || mode !== 'draw') return;
+        const m = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(m, camera);
+        const cur = new THREE.Vector3();
+        raycaster.ray.intersectPlane(new THREE.Plane(camera.getWorldDirection(new THREE.Vector3()).negate(), -startPoint.dot(camera.getWorldDirection(new THREE.Vector3()).negate())), cur);
+
+        const diff = cur.sub(startPoint);
+        const ax = Math.abs(diff.x), ay = Math.abs(diff.y), az = Math.abs(diff.z);
+        currentDir.set(0,0,0);
+        let d = 0;
+        if (ax > ay && ax > az) { currentDir.x = Math.sign(diff.x); d = ax; }
+        else if (ay > ax && ay > az) { currentDir.y = Math.sign(diff.y); d = ay; }
+        else { currentDir.z = Math.sign(diff.z); d = az; }
+
+        if (d > 0.1) {
+            previewPipe.visible = true;
+            previewPipe.scale.set(currentDN.radius, d, currentDN.radius);
+            previewPipe.position.copy(startPoint.clone().add(currentDir.clone().multiplyScalar(d/2)));
+            previewPipe.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), currentDir);
+        }
+    }
+
+    function onUp() {
+        if (isDrawing && previewPipe.visible) {
+            document.getElementById('lengthModal').style.display = 'block';
+            document.getElementById('lenVal').focus();
+        }
+        isDrawing = false;
+    }
+
+    window.confirmPipe = () => {
+        const L = parseFloat(document.getElementById('lenVal').value) || 1.0;
+        const end = startPoint.clone().add(currentDir.clone().multiplyScalar(L));
+        const pipe = new THREE.Mesh(
+            new THREE.CylinderGeometry(currentDN.radius, currentDN.radius, L, 16),
+            new THREE.MeshPhongMaterial({ color: currentDN.color, shininess: 80 })
+        );
+        pipe.position.copy(startPoint.clone().add(end).divideScalar(2));
+        pipe.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), currentDir);
+        pipe.userData = { L, dn: currentDN.label, r: currentDN.radius };
+        scene.add(pipe);
+        pipes.push(pipe);
+        nodes.push(end.clone());
+        previewPipe.visible = false;
+        document.getElementById('lengthModal').style.display = 'none';
+    };
+
+    window.undo = () => {
+        const p = pipes.pop(); if(p) { scene.remove(p); nodes.pop(); }
+        fittings.forEach(f => scene.remove(f)); fittings = [];
+    };
+
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+</script>
+</body>
+</html>
