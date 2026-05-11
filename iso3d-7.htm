@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BIM +GF+ Precision 1:1</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; touch-action: none; }
+        .dn-container { position: fixed; top: 15px; left: 15px; z-index: 100; display: none; flex-direction: column; gap: 6px; }
+        .dn-btn { width: 55px; height: 42px; border: 2px solid rgba(255,255,255,0.2); border-radius: 8px; color: white; font-weight: bold; cursor: pointer; font-size: 13px; }
+        .controls { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px; background: rgba(0,0,0,0.9); padding: 12px 20px; border-radius: 40px; z-index: 100; border: 1px solid rgba(255,255,255,0.1); }
+        button.tool { width: 52px; height: 52px; border-radius: 50%; border: none; background: #333; color: white; font-weight: bold; cursor: pointer; font-size: 18px; }
+        button.active { background: #2196F3; box-shadow: 0 0 15px #2196F3; }
+        #lengthModal { position: fixed; top: 30%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 25px; border-radius: 20px; display: none; text-align: center; z-index: 1000; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+        input { width: 120px; font-size: 32px; padding: 10px; text-align: center; border: 2px solid #2196F3; border-radius: 12px; margin-bottom: 15px; outline: none; }
+    </style>
+</head>
+<body>
+
+<div class="dn-container" id="dnPanel">
+    <button class="dn-btn" onclick="setDN('DN15', 21.3, '#00BFFF')" style="background:#00BFFF">15</button>
+    <button class="dn-btn" onclick="setDN('DN20', 26.9, '#FFEB3B')" style="background:#FFEB3B; color:black">20</button>
+    <button class="dn-btn" onclick="setDN('DN25', 33.7, '#F44336')" style="background:#F44336">25</button>
+    <button class="dn-btn" onclick="setDN('DN32', 42.4, '#4CAF50')" style="background:#4CAF50">32</button>
+    <button class="dn-btn" onclick="setDN('DN40', 48.3, '#FF9800')" style="background:#FF9800">40</button>
+    <button class="dn-btn" onclick="setDN('DN50', 60.3, '#9C27B0')" style="background:#9C27B0">50</button>
+    <button class="dn-btn" onclick="setDN('DN65', 76.1, '#0D47A1')" style="background:#0D47A1">65</button>
+</div>
+
+<div id="lengthModal">
+    <input type="number" id="lenVal" value="1.0" step="0.1" inputmode="decimal">
+    <button onclick="confirmPipe()" style="width:100%; padding:15px; background:#4CAF50; color:white; border:none; border-radius:12px; font-weight:bold;">OK</button>
+</div>
+
+<div class="controls">
+    <button id="btnZ" class="tool" onclick="toggleZ()">Z</button>
+    <button id="btnR" class="tool" onclick="toggleR()">R</button>
+    <button id="btnD" class="tool" onclick="toggleD()">Ø</button>
+    <button id="btnF" class="tool" onclick="generateFittings()">F</button>
+    <button class="tool" onclick="undo()" style="background:#444">↩</button>
+    <button class="tool" onclick="location.reload()" style="background:#b71c1c">✖</button>
+</div>
+
+<script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    let scene, camera, renderer, controls, raycaster;
+    let isDrawing = false, startPoint = null, currentDir = new THREE.Vector3();
+    let previewPipe, pipes = [], nodes = [], fittings = [];
+    
+    let currentDN = { label: 'DN25', r: 33.7 / 2000, color: '#F44336' };
+    let mode = 'draw'; 
+
+    const GF_CATALOG = {
+        'DN15': { a: 0.028, r_out: 0.015, s: 0.028 }, 
+        'DN20': { a: 0.033, r_out: 0.018, s: 0.033 }, 
+        'DN25': { a: 0.038, r_out: 0.022, s: 0.042 }, 
+        'DN32': { a: 0.045, r_out: 0.027, s: 0.050 }, 
+        'DN40': { a: 0.050, r_out: 0.030, s: 0.055 }, 
+        'DN50': { a: 0.058, r_out: 0.037, s: 0.070 }, 
+        'DN65': { a: 0.069, r_out: 0.046, s: 0.085 }  
+    };
+
+    const fitMat = new THREE.MeshPhongMaterial({ color: 0x777777, shininess: 50 });
+
+    init();
+    animate();
+
+    function init() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111);
+        camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.01, 100);
+        camera.position.set(2, 2, 2);
+        camera.up.set(0, 0, 1);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(new THREE.AmbientLight(0xffffff, 1.0));
+        const sun = new THREE.DirectionalLight(0xffffff, 1.2); sun.position.set(5, 5, 10); scene.add(sun);
+        
+        const grid = new THREE.GridHelper(10, 100, 0x333333, 0x222222); grid.rotation.x = Math.PI / 2; scene.add(grid);
+
+        controls = new OrbitControls(camera, renderer.domElement);
+        raycaster = new THREE.Raycaster();
+
+        previewPipe = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 16), new THREE.MeshBasicMaterial({ color: 0x2196F3, transparent: true, opacity: 0.5 })); 
+        previewPipe.visible = false; scene.add(previewPipe);
+
+        renderer.domElement.addEventListener('pointerdown', onDown);
+        renderer.domElement.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+    }
+
+    // --- ФУНКЦИИ ГЕОМЕТРИИ +GF+ ---
+
+    function createTeeGF(dims, connected, pos) {
+        const group = new THREE.Group();
+        const r = dims.r_out;
+        connected.forEach(pipe => {
+            const dir = pipe.position.clone().sub(pos).normalize();
+            const leg = new THREE.Mesh(new THREE.CylinderGeometry(r, r, dims.a, 16), fitMat);
+            leg.position.copy(dir.clone().multiplyScalar(dims.a / 2));
+            leg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+            group.add(leg);
+        });
+        group.add(new THREE.Mesh(new THREE.SphereGeometry(r, 16, 16), fitMat));
+        return group;
+    }
+
+    function createElbowGF(dims, dir1, dir2) {
+        const group = new THREE.Group();
+        const r = dims.r_out;
+        [dir1, dir2].forEach(dir => {
+            const leg = new THREE.Mesh(new THREE.CylinderGeometry(r, r, dims.a, 16), fitMat);
+            leg.position.copy(dir.clone().multiplyScalar(dims.a / 2));
+            leg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+            group.add(leg);
+        });
+        group.add(new THREE.Mesh(new THREE.SphereGeometry(r, 16, 16), fitMat));
+        return group;
+    }
+
+    function createHexNippleGF(dims) {
+        const group = new THREE.Group();
+        const r = dims.r_out * 0.85;
+        const s = dims.s / 2; // Размер под ключ
+        const hex = new THREE.Mesh(new THREE.CylinderGeometry(s, s, 0.01, 6), fitMat);
+        const t1 = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.015, 16), fitMat);
+        t1.position.y = 0.012;
+        const t2 = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.015, 16), fitMat);
+        t2.position.y = -0.012;
+        group.add(hex, t1, t2);
+        return group;
+    }
+
+    function createReducerGF(rSmall, rLarge, len) {
+        const group = new THREE.Group();
+        const cone = new THREE.Mesh(new THREE.CylinderGeometry(rSmall * 1.1, rLarge * 1.1, len, 16), fitMat);
+        const cap = new THREE.Mesh(new THREE.CylinderGeometry(rLarge * 1.2, rLarge * 1.2, 0.005, 16), fitMat);
+        cap.position.y = -len/2;
+        group.add(cone, cap);
+        return group;
+    }
+
+    // --- ЛОГИКА ГЕНЕРАЦИИ ---
+
+    window.generateFittings = () => {
+        fittings.forEach(f => scene.remove(f)); fittings = [];
+        const nodeMap = new Map();
+
+        pipes.forEach(p => {
+            const dir = new THREE.Vector3(0,1,0).applyQuaternion(p.quaternion);
+            const p1 = p.position.clone().add(dir.clone().multiplyScalar(p.userData.L/2));
+            const p2 = p.position.clone().add(dir.clone().multiplyScalar(-p.userData.L/2));
+            [p1, p2].forEach(pt => {
+                const k = `${pt.x.toFixed(3)},${pt.y.toFixed(3)},${pt.z.toFixed(3)}`;
+                if(!nodeMap.has(k)) nodeMap.set(k, []); nodeMap.get(k).push(p);
+            });
+        });
+
+        nodeMap.forEach((connected, key) => {
+            if(connected.length < 2) return;
+            const pos = new THREE.Vector3(...key.split(',').map(Number));
+            let maxP = connected[0];
+            connected.forEach(p => { if(p.userData.r > maxP.userData.r) maxP = p; });
+            const dims = GF_CATALOG[maxP.userData.dn];
+
+            let fit;
+            if(connected.length === 2) {
+                const d1 = pos.clone().sub(connected[0].position).normalize();
+                const d2 = pos.clone().sub(connected[1].position).normalize();
+                if(d1.angleTo(d2) > 0.1) fit = createElbowGF(dims, d1, d2);
+            } else {
+                fit = createTeeGF(dims, connected, pos);
+            }
+
+            if(fit) {
+                fit.position.copy(pos); scene.add(fit); fittings.push(fit);
+                connected.forEach(p => {
+                    if(p.userData.r < maxP.userData.r - 0.001) {
+                        const dir = p.position.clone().sub(pos).normalize();
+                        const pDims = GF_CATALOG[p.userData.dn];
+                        
+                        const nip = createHexNippleGF(pDims);
+                        nip.position.copy(pos.clone().add(dir.clone().multiplyScalar(dims.a + 0.01)));
+                        nip.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+                        scene.add(nip); fittings.push(nip);
+
+                        const red = createReducerGF(p.userData.r, maxP.userData.r, 0.03);
+                        red.position.copy(pos.clone().add(dir.clone().multiplyScalar(dims.a + 0.035)));
+                        red.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir);
+                        scene.add(red); fittings.push(red);
+                    }
+                });
+            }
+        });
+    };
+
+    // --- ОСТАЛЬНОЕ УПРАВЛЕНИЕ ---
+
+    window.toggleR = () => { mode = (mode === 'view' ? 'draw' : 'view'); updateUI(); };
+    window.toggleD = () => { mode = (mode === 'diameter' ? 'draw' : 'diameter'); updateUI(); };
+    window.toggleZ = () => { camera.position.set(camera.position.x, camera.position.y, 3); camera.lookAt(camera.position.x, camera.position.y, 0); mode = 'draw'; updateUI(); };
+    function updateUI() {
+        document.getElementById('dnPanel').style.display = (mode === 'diameter' ? 'flex' : 'none');
+        controls.enabled = (mode === 'view');
+    }
+    window.setDN = (l, r_mm, c) => { currentDN = { label: l, r: r_mm/2000, color: c }; };
+
+    function onDown(e) {
+        if(mode === 'view') return;
+        const m = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(m, camera);
+        if(mode === 'diameter') {
+            const h = raycaster.intersectObjects(pipes);
+            if(h.length > 0) {
+                const p = h[0].object;
+                p.geometry.dispose(); p.geometry = new THREE.CylinderGeometry(currentDN.r, currentDN.r, p.userData.L, 16);
+                p.material.color.set(currentDN.color); p.userData.dn = currentDN.label; p.userData.r = currentDN.r;
+            }
+            return;
+        }
+        let snap = null;
+        nodes.forEach(n => { if(m.distanceTo(n.clone().project(camera)) < 0.05) snap = n.clone(); });
+        startPoint = snap || new THREE.Vector3();
+        if(!snap) raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,0,1), -startPoint.z), startPoint);
+        isDrawing = true;
+    }
+
+    function onMove(e) {
+        if(!isDrawing || mode !== 'draw') return;
+        const m = new THREE.Vector2((e.clientX/window.innerWidth)*2-1, -(e.clientY/window.innerHeight)*2+1);
+        raycaster.setFromCamera(m, camera);
+        const cur = new THREE.Vector3();
+        const planeNorm = camera.getWorldDirection(new THREE.Vector3()).negate();
+        raycaster.ray.intersectPlane(new THREE.Plane(planeNorm, -startPoint.dot(planeNorm)), cur);
+        const diff = cur.sub(startPoint);
+        const ax = Math.abs(diff.x), ay = Math.abs(diff.y), az = Math.abs(diff.z);
+        currentDir.set(0,0,0); let d = 0;
+        if(ax > ay && ax > az) { currentDir.x = Math.sign(diff.x); d = ax; }
+        else if(ay > ax && ay > az) { currentDir.y = Math.sign(diff.y); d = ay; }
+        else { currentDir.z = Math.sign(diff.z); d = az; }
+        if(d > 0.01) {
+            previewPipe.visible = true;
+            previewPipe.geometry.dispose(); previewPipe.geometry = new THREE.CylinderGeometry(currentDN.r, currentDN.r, d, 16);
+            previewPipe.position.copy(startPoint.clone().add(currentDir.clone().multiplyScalar(d/2)));
+            previewPipe.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), currentDir);
+        }
+    }
+
+    function onUp() { if(isDrawing && previewPipe.visible) document.getElementById('lengthModal').style.display = 'block'; isDrawing = false; }
+
+    window.confirmPipe = () => {
+        const L = parseFloat(document.getElementById('lenVal').value) || 1.0;
+        const end = startPoint.clone().add(currentDir.clone().multiplyScalar(L));
+        const p = new THREE.Mesh(new THREE.CylinderGeometry(currentDN.r, currentDN.r, L, 16), new THREE.MeshPhongMaterial({ color: currentDN.color }));
+        p.position.copy(startPoint.clone().add(end).divideScalar(2));
+        p.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), currentDir);
+        p.userData = { L, dn: currentDN.label, r: currentDN.r };
+        scene.add(p); pipes.push(p); nodes.push(end.clone());
+        previewPipe.visible = false; document.getElementById('lengthModal').style.display = 'none';
+    };
+
+    window.undo = () => { const p = pipes.pop(); if(p){ scene.remove(p); nodes.pop(); } fittings.forEach(f => scene.remove(f)); fittings = []; };
+    function animate() { requestAnimationFrame(animate); renderer.render(scene, camera); }
+</script>
+</body>
+</html>
